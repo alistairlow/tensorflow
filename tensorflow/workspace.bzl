@@ -170,10 +170,11 @@ def tf_workspace(path_prefix="", tf_repo_name=""):
       name = "eigen_archive",
       urls = [
           #"http://mirror.bazel.build/bitbucket.org/eigen/eigen/get/2b5586d1d4f3.tar.gz",
-          "https://bitbucket.org/alistairlow/opencl/get/71d182184cd4.tar.gz",
+          "https://bitbucket.org/alistairlow/opencl/get/6b0d9aa5b64a.tar.gz",
+
       ],
       #sha256 = "ca7beac153d4059c02c8fc59816c82d54ea47fe58365e8aded4082ded0b820c4",
-      strip_prefix = "alistairlow-opencl-71d182184cd4",
+      strip_prefix = "alistairlow-opencl-6b0d9aa5b64a",
       build_file = str(Label("//third_party:eigen.BUILD")),
   )
 
