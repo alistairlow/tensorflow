@@ -50,8 +50,9 @@ class BiasOp : public BinaryOp<T> {
     } else {
       data_format_ = FORMAT_NHWC;
     }
-    OP_REQUIRES(context, data_format_ == FORMAT_NHWC, errors::InvalidArgument(
-      DeviceName<Device>::value + " BiasOp only supports NHWC."));
+    OP_REQUIRES(context, data_format_ == FORMAT_NHWC,
+                errors::InvalidArgument(context->device()->name() +
+                                        " BiasOp only supports NHWC."));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -163,8 +164,9 @@ class BiasGradOp : public OpKernel {
     } else {
       data_format_ = FORMAT_NHWC;
     }
-    OP_REQUIRES(context, data_format_ == FORMAT_NHWC, errors::InvalidArgument(
-      DeviceName<Device>::value + " BiasGradOp only supports NHWC."));
+    OP_REQUIRES(context, data_format_ == FORMAT_NHWC,
+                errors::InvalidArgument(context->device()->name() +
+                                        " BiasGradOp only supports NHWC."));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -176,8 +178,9 @@ class BiasGradOp : public OpKernel {
                                         output_backprop.shape().DebugString()));
 
     OP_REQUIRES(
-        context, FastBoundsCheck(output_backprop.NumElements(),
-                                 std::numeric_limits<int32>::max()),
+        context,
+        FastBoundsCheck(output_backprop.NumElements(),
+                        std::numeric_limits<int32>::max()),
         errors::InvalidArgument("BiasGrad requires tensor size <= int32 max"));
 
     int32 batch, height, width, channel;
@@ -190,8 +193,9 @@ class BiasGradOp : public OpKernel {
     if (channel == 0) {
       return;  // Nothing to do
     } else if (output_backprop.NumElements() == 0) {
-      // Eigen often crashes by design on empty tensors, but setZero is safe
-      output->template flat<T>().setZero();
+      // Eigen often crashes by design on empty tensors, but this is safe
+      output->template flat<T>().device(context->eigen_device<Device>()) =
+        output->template flat<T>().constant(T(0));
     } else {
       Eigen::DSizes<int, 2> two_dims(batch * height * width, channel);
 #ifdef EIGEN_HAS_INDEX_LIST
