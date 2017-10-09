@@ -50,6 +50,10 @@ limitations under the License.
 #include "tensorflow/core/platform/stream_executor.h"
 #endif  // GOOGLE_CUDA
 
+#ifdef TENSORFLOW_USE_SYCL
+#include "tensorflow/core/kernels/conv_ops_sycl.h"
+#endif  // TENSORFLOW_USE_SYCL
+
 namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
@@ -57,15 +61,15 @@ typedef Eigen::GpuDevice GPUDevice;
 
 #ifdef TENSORFLOW_USE_SYCL
 typedef Eigen::SyclDevice SYCLDevice;
-#endif // TENSORFLOW_USE_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 
 namespace {
 template <typename Device, typename T>
 struct LaunchGeneric {
-  static void launch(OpKernelContext* ctx, const Tensor& input,
-                     const Tensor& filter, int row_stride, int col_stride,
-                     const Eigen::PaddingType& padding, Tensor* output,
-                     TensorFormat data_format) {
+  void operator()(OpKernelContext* ctx, const Tensor& input,
+                  const Tensor& filter, int row_stride, int col_stride,
+                  const Padding& padding, Tensor* output,
+                  TensorFormat data_format) {
     CHECK(data_format == FORMAT_NHWC) << "Generic conv implementation only "
                                          "supports NHWC tensor format for now.";
     if (filter.dim_size(0) == 1 && filter.dim_size(1) == 1 && row_stride == 1 &&
@@ -90,8 +94,7 @@ struct LaunchGeneric {
           filter.shaped<T, 2>({filter.dim_size(2), filter.dim_size(3)}),
           dim_pair);
     } else if (filter.dim_size(0) == input.dim_size(1) &&
-               filter.dim_size(1) == input.dim_size(2) &&
-               padding == Eigen::PADDING_VALID) {
+               filter.dim_size(1) == input.dim_size(2) && padding == VALID) {
       // If the input data and filter have the same height/width,
       // the 2D convolution is reduced to matrix multiplication.
       const int k =  // Length of reduction dimension.
@@ -108,51 +111,28 @@ struct LaunchGeneric {
       functor::SpatialConvolution<Device, T>()(
           ctx->eigen_device<Device>(), output->tensor<T, 4>(),
           input.tensor<T, 4>(), filter.tensor<T, 4>(), row_stride, col_stride,
-          padding);
+          BrainPadding2EigenPadding(padding));
     }
   }
 };
 }  // namespace
 
 template <typename T>
-class LaunchConv2DOp<CPUDevice, T> {
- public:
-  void launch(OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
-              const Tensor& input, const Tensor& filter, int row_stride,
-              int col_stride, const Eigen::PaddingType& padding, Tensor* output,
-              TensorFormat data_format) {
+struct LaunchConv2DOp<CPUDevice, T> {
+  void operator()(OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
+                  const Tensor& input, const Tensor& filter, int row_stride,
+                  int col_stride, const Padding& padding, Tensor* output,
+                  TensorFormat data_format) {
     if (data_format != FORMAT_NHWC) {
       ctx->SetStatus(
           errors::Unimplemented("Generic conv implementation only supports "
                                 "NHWC tensor format for now."));
       return;
     }
-    LaunchGeneric<CPUDevice, T>::launch(ctx, input, filter, row_stride,
-                                        col_stride, padding, output,
-                                        data_format);
+    LaunchGeneric<CPUDevice, T>()(ctx, input, filter, row_stride, col_stride,
+                                  padding, output, data_format);
   }
 };
-
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-class LaunchConv2DOp<SYCLDevice, T> {
- public:
-  void launch(OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
-              const Tensor& input, const Tensor& filter, int row_stride,
-              int col_stride, const Eigen::PaddingType& padding, Tensor* output,
-              TensorFormat data_format) {
-    if (data_format != FORMAT_NHWC) {
-      ctx->SetStatus(
-          errors::Unimplemented("SYCL conv implementation only supports "
-                                "NHWC tensor format for now."));
-      return;
-    }
-    LaunchGeneric<SYCLDevice, T>::launch(ctx, input, filter, row_stride,
-                                        col_stride, padding, output,
-                                        data_format);
-  }
-};
-#endif // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename T>
 class LaunchDeepConvOp {
@@ -318,19 +298,18 @@ class Conv2DOp : public BinaryOp<T> {
                                         filter.shape().DebugString()));
 
     for (int i = 0; i < 3; i++) {
-      OP_REQUIRES(
-          context,
-          FastBoundsCheck(filter.dim_size(i), std::numeric_limits<int>::max()),
-          errors::InvalidArgument("filter too large"));
+      OP_REQUIRES(context, FastBoundsCheck(filter.dim_size(i),
+                                           std::numeric_limits<int>::max()),
+                  errors::InvalidArgument("filter too large"));
     }
 
     // The last dimension for input is in_depth. It must be the same as the
     // filter's in_depth.
     const int64 in_depth = GetTensorDim(input, data_format_, 'C');
-    OP_REQUIRES(context, in_depth == filter.dim_size(2),
-                errors::InvalidArgument(
-                    "input and filter must have the same depth: ", in_depth,
-                    " vs ", filter.dim_size(2)));
+    OP_REQUIRES(
+        context, in_depth == filter.dim_size(2),
+        errors::InvalidArgument("input and filter must have the same depth: ",
+                                in_depth, " vs ", filter.dim_size(2)));
 
     // The last dimension for filter is out_depth.
     const int out_depth = static_cast<int>(filter.dim_size(3));
@@ -338,20 +317,18 @@ class Conv2DOp : public BinaryOp<T> {
     // The second dimension for input is rows/height.
     // The first dimension for filter is rows/height.
     const int64 input_rows_raw = GetTensorDim(input, data_format_, 'H');
-    OP_REQUIRES(
-        context,
-        FastBoundsCheck(input_rows_raw, std::numeric_limits<int>::max()),
-        errors::InvalidArgument("Input rows too large"));
+    OP_REQUIRES(context, FastBoundsCheck(input_rows_raw,
+                                         std::numeric_limits<int>::max()),
+                errors::InvalidArgument("Input rows too large"));
     const int input_rows = static_cast<int>(input_rows_raw);
     const int filter_rows = static_cast<int>(filter.dim_size(0));
 
     // The third dimension for input is columns/width.
     // The second dimension for filter is columns/width.
     const int64 input_cols_raw = GetTensorDim(input, data_format_, 'W');
-    OP_REQUIRES(
-        context,
-        FastBoundsCheck(input_cols_raw, std::numeric_limits<int>::max()),
-        errors::InvalidArgument("Input cols too large"));
+    OP_REQUIRES(context, FastBoundsCheck(input_cols_raw,
+                                         std::numeric_limits<int>::max()),
+                errors::InvalidArgument("Input cols too large"));
     const int input_cols = static_cast<int>(input_cols_raw);
     const int filter_cols = static_cast<int>(filter.dim_size(1));
 
@@ -382,7 +359,7 @@ class Conv2DOp : public BinaryOp<T> {
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, out_shape, &output));
 
-    VLOG(2) << "Conv2D: in_depth = " << in_depth
+    LOG(INFO) << "Conv2D: in_depth = " << in_depth
             << ", input_cols = " << input_cols
             << ", filter_cols = " << filter_cols
             << ", input_rows = " << input_rows
@@ -412,9 +389,8 @@ class Conv2DOp : public BinaryOp<T> {
       return;
     }
 
-    launcher_.launch(context, use_cudnn_, cudnn_use_autotune_, input, filter,
-                     stride_rows, stride_cols,
-                     BrainPadding2EigenPadding(padding_), output, data_format_);
+    launcher_(context, use_cudnn_, cudnn_use_autotune_, input, filter,
+              stride_rows, stride_cols, padding_, output, data_format_);
   }
 
  private:
@@ -470,15 +446,14 @@ typedef AutoTuneSingleton<ConvAutoTuneGroup, ConvParameters,
     AutoTuneConv;
 
 template <typename T>
-void LaunchConv2DOp<GPUDevice, T>::launch(
+void LaunchConv2DOp<GPUDevice, T>::operator()(
     OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
     const Tensor& input_param, const Tensor& filter, int row_stride,
-    int col_stride, const Eigen::PaddingType& padding, Tensor* output,
+    int col_stride, const Padding& padding, Tensor* output,
     TensorFormat data_format) {
   using perftools::gputools::dnn::AlgorithmConfig;
-  using perftools::gputools::dnn::AlgorithmType;
+  using perftools::gputools::dnn::AlgorithmDesc;
   using perftools::gputools::dnn::ProfileResult;
-  using perftools::gputools::dnn::kDefaultAlgorithm;
   auto* stream = ctx->op_device_context()->stream();
   OP_REQUIRES(ctx, stream, errors::Internal("No GPU stream available."));
 
@@ -517,8 +492,8 @@ void LaunchConv2DOp<GPUDevice, T>::launch(
     }
     return;
   } else if (filter.dim_size(0) == input.dim_size(1) &&
-             filter.dim_size(1) == input.dim_size(2) &&
-             padding == Eigen::PADDING_VALID && data_format == FORMAT_NHWC) {
+             filter.dim_size(1) == input.dim_size(2) && padding == VALID &&
+             data_format == FORMAT_NHWC) {
     // The input data and filter have the same height/width, so call cublas
     // directly.
     const uint64 m = input.dim_size(0);
@@ -558,7 +533,7 @@ void LaunchConv2DOp<GPUDevice, T>::launch(
   const int64 out_depths = GetTensorDim(*output, data_format, 'C');
   const int64 patch_rows = filter.dim_size(0);
   const int64 patch_cols = filter.dim_size(1);
-  if (padding == Eigen::PADDING_SAME) {
+  if (padding == SAME) {
     // Total padding on rows and cols is
     // Pr = (R' - 1) * S + Kr - R
     // Pc = (C' - 1) * S + Kc - C
@@ -692,33 +667,38 @@ void LaunchConv2DOp<GPUDevice, T>::launch(
   AlgorithmConfig algorithm_config;
   if (cudnn_use_autotune &&
       !AutoTuneConv::GetInstance()->Find(conv_parameters, &algorithm_config)) {
-    std::vector<AlgorithmType> algorithms;
+    std::vector<AlgorithmDesc::Index> algorithms;
     CHECK(stream->parent()->GetConvolveAlgorithms(
         conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(), &algorithms));
     ProfileResult best_result;
     ProfileResult best_result_no_scratch;
-    for (auto profile_algorithm : algorithms) {
-      // TODO(zhengxq): profile each algorithm multiple times to better
-      // accuracy.
-      CudnnScratchAllocator scratch_allocator(ConvolveScratchSize, ctx);
-      ProfileResult profile_result;
-      bool cudnn_launch_status =
-          stream
-              ->ThenConvolveWithAlgorithm(
-                  input_desc, input_ptr, filter_desc, filter_ptr, conv_desc,
-                  output_desc, &output_ptr, &scratch_allocator,
-                  AlgorithmConfig(profile_algorithm), &profile_result)
-              .ok();
-      if (cudnn_launch_status) {
-        if (profile_result.is_valid()) {
-          if (profile_result.elapsed_time_in_ms() <
-              best_result.elapsed_time_in_ms()) {
-            best_result = profile_result;
-          }
-          if (scratch_allocator.TotalByteSize() == 0 &&
-              profile_result.elapsed_time_in_ms() <
-                  best_result_no_scratch.elapsed_time_in_ms()) {
-            best_result_no_scratch = profile_result;
+    // TODO(benbarsdell): Ideally this should not attempt using tensor op math
+    // if it's not enabled.
+    for (bool use_tensor_ops : {false, true}) {
+      for (auto algo_index : algorithms) {
+        // TODO(zhengxq): profile each algorithm multiple times to better
+        // accuracy.
+        AlgorithmDesc profile_algorithm(algo_index, use_tensor_ops);
+        CudnnScratchAllocator scratch_allocator(ConvolveScratchSize, ctx);
+        ProfileResult profile_result;
+        bool cudnn_launch_status =
+            stream
+                ->ThenConvolveWithAlgorithm(
+                    input_desc, input_ptr, filter_desc, filter_ptr, conv_desc,
+                    output_desc, &output_ptr, &scratch_allocator,
+                    AlgorithmConfig(profile_algorithm), &profile_result)
+                .ok();
+        if (cudnn_launch_status) {
+          if (profile_result.is_valid()) {
+            if (profile_result.elapsed_time_in_ms() <
+                best_result.elapsed_time_in_ms()) {
+              best_result = profile_result;
+            }
+            if (scratch_allocator.TotalByteSize() == 0 &&
+                profile_result.elapsed_time_in_ms() <
+                    best_result_no_scratch.elapsed_time_in_ms()) {
+              best_result_no_scratch = profile_result;
+            }
           }
         }
       }
@@ -813,9 +793,12 @@ template class LaunchConv2DOp<GPUDevice, float>;
 #endif  // GOOGLE_CUDA
 
 #ifdef TENSORFLOW_USE_SYCL
-REGISTER_KERNEL_BUILDER(
-    Name("Conv2D").Device(DEVICE_SYCL).TypeConstraint<float>("T"),
-    Conv2DOp<SYCLDevice, float>);
-#endif // TENSORFLOW_USE_SYCL
+#define REGISTER_SYCL_KERNELS(T)                                     \
+  REGISTER_KERNEL_BUILDER(                                           \
+      Name("Conv2D").Device(DEVICE_SYCL).TypeConstraint<T>("T"), \
+      Conv2DOp<SYCLDevice, T>);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNELS)
+#undef REGISTER_SYCL_KERNELS
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

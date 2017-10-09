@@ -15,25 +15,31 @@ limitations under the License.
 
 #ifndef TENSORFLOW_KERNELS_L2LOSS_OP_H_
 #define TENSORFLOW_KERNELS_L2LOSS_OP_H_
-// Functor definition for L2LossOp, must be compilable by nvcc.
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 
 namespace tensorflow {
-namespace functor {
 
-// Functor used by L2LossOp to do the computations.
 template <typename Device, typename T>
-struct L2Loss {
-  void operator()(const Device& d, typename TTypes<T>::ConstTensor input,
-                  typename TTypes<T>::Scalar output) {
-    // We flatten the input tensor and reduce on dimension 0, producing
-    // a single number which is Mul(Sum(x^2), 0.5).
-    output.device(d) = (input.square() * static_cast<T>(0.5)).sum();
+class L2LossOp : public OpKernel {
+ public:
+  explicit L2LossOp(OpKernelConstruction* context) : OpKernel(context) {}
+
+  void Compute(OpKernelContext* context) override {
+    // The input tensor can be of any number of dimensions, even though it's
+    // 2D in most typical applications.
+    const Tensor& input = context->input(0);
+    // The output is a single number.
+    Tensor* output = nullptr;
+    OP_REQUIRES_OK(context,
+                   context->allocate_output(0, TensorShape({}), &output));
+    const Device& d = context->eigen_device<Device>();
+    output->scalar<T>().device(d) =
+        (input.flat<T>().square() * static_cast<T>(0.5)).sum();
   }
 };
 
-}  // namespace functor
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_KERNELS_L2LOSS_OP_H_
