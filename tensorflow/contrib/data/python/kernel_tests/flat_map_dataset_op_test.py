@@ -24,6 +24,8 @@ import numpy as np
 from tensorflow.contrib.data.python.ops import dataset_ops
 from tensorflow.python.client import session
 from tensorflow.python.framework import errors
+from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.ops import sparse_ops
 from tensorflow.python.platform import test
 from tensorflow.python.training import server_lib
 
@@ -119,6 +121,30 @@ class FlatMapDatasetTest(test.TestCase):
       with self.assertRaises(errors.OutOfRangeError):
         sess.run(get_next)
   # pylint: enable=g-long-lambda
+
+  def testSparse(self):
+    def _map_fn(i):
+      return sparse_tensor.SparseTensor(
+          indices=[[0, 0], [1, 1]], values=(i * [1, -1]), dense_shape=[2, 2])
+
+    def _flat_map_fn(x):
+      return dataset_ops.Dataset.from_tensor_slices(
+          sparse_ops.sparse_to_dense(x.indices, x.dense_shape, x.values))
+
+    iterator = (
+        dataset_ops.Dataset.range(10).map(_map_fn).flat_map(_flat_map_fn)
+        .make_initializable_iterator())
+    init_op = iterator.initializer
+    get_next = iterator.get_next()
+
+    with self.test_session() as sess:
+      sess.run(init_op)
+      for i in range(10):
+        for j in range(2):
+          expected = [i, 0] if j % 2 == 0 else [0, -i]
+          self.assertAllEqual(expected, sess.run(get_next))
+      with self.assertRaises(errors.OutOfRangeError):
+        sess.run(get_next)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 Please go to Stack Overflow for help and support:
 
-http://stackoverflow.com/questions/tagged/tensorflow
+https://stackoverflow.com/questions/tagged/tensorflow
 
 If you open a GitHub issue, here is our policy:
 
@@ -19,6 +19,7 @@ If you open a GitHub issue, here is our policy:
 - **TensorFlow version (use command below)**:
 - **Python version**: 
 - **Bazel version (if compiling from source)**:
+- **GCC/Compiler version (if compiling from source)**:
 - **CUDA/cuDNN version**:
 - **GPU model and memory**:
 - **Exact command to reproduce**:

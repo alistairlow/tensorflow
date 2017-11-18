@@ -54,7 +54,7 @@ patch versions.  The public APIs consist of
     * [`event`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/util/event.proto)
     * [`graph`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/graph.proto)
     * [`op_def`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/op_def.proto)
-    * [`reader_base`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/kernels/reader_base.proto)
+    * [`reader_base`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/reader_base.proto)
     * [`summary`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/summary.proto)
     * [`tensor`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/tensor.proto)
     * [`tensor_shape`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/tensor_shape.proto)
@@ -67,7 +67,9 @@ backward incompatible ways between minor releases. These include:
 
 *   **Experimental APIs**: The @{tf.contrib} module and its submodules in Python
     and any functions in the C API or fields in protocol buffers that are
-    explicitly commented as being experimental.
+    explicitly commented as being experimental. In particular, any field in a
+    protocol buffer which is called "experimental" and all its fields and
+    submessages can change at any time.
 
 *   **Other languages**: TensorFlow APIs in languages other than Python and C,
     such as:

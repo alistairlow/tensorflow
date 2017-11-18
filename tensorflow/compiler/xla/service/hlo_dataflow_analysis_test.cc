@@ -17,8 +17,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
+#include "tensorflow/compiler/xla/service/hlo_graph_dumper.h"
 #include "tensorflow/compiler/xla/service/hlo_matchers.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
+#include "tensorflow/compiler/xla/service/hlo_ordering.h"
 #include "tensorflow/compiler/xla/service/instruction_fusion.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
@@ -45,20 +47,21 @@ class HloDataflowAnalysisTest : public HloTestBase,
   // reference to the generated analysis stored in analysis_.
   const HloDataflowAnalysis& RunAnalysis(bool ssa_form,
                                          bool bitcast_defines_value = false) {
+    hlo_graph_dumper::MaybeDumpHloModule(*module_, "Before dataflow analysis");
     analysis_ =
         HloDataflowAnalysis::Run(module_.get(), ssa_form, bitcast_defines_value)
             .ConsumeValueOrDie();
     return *analysis_;
   }
 
-  // Return a vector of the HloValues at the given program location.
+  // Return a vector of the HloValues at the given program position.
   std::vector<HloValue> HloValuesAt(const HloInstruction* instruction,
                                     const ShapeIndex& index = {}) {
     CHECK(analysis_ != nullptr);
     std::vector<HloValue> values;
-    for (HloValue::Id value_id :
-         analysis_->GetValueSet(instruction, index).value_ids()) {
-      values.push_back(analysis_->GetValue(value_id));
+    for (const HloValue* value :
+         analysis_->GetValueSet(instruction, index).values()) {
+      values.push_back(*value);
     }
     return values;
   }
@@ -70,8 +73,8 @@ class HloDataflowAnalysisTest : public HloTestBase,
                                 const HloInstruction* b) {
     EXPECT_FALSE(ShapeUtil::IsTuple(a->shape()));
     EXPECT_FALSE(ShapeUtil::IsTuple(b->shape()));
-    return analysis_->MayInterfere(analysis_->GetValueDefinedAt(a),
-                                   analysis_->GetValueDefinedAt(b), ordering);
+    return ordering.MayInterfere(analysis_->GetValueDefinedAt(a),
+                                 analysis_->GetValueDefinedAt(b), *analysis_);
   }
 
   std::unique_ptr<HloModule> module_;
@@ -101,14 +104,14 @@ TEST_P(HloDataflowAnalysisTest, BinaryOperation) {
   EXPECT_TRUE(analysis.ValueIsDefinedAt(constant2));
   EXPECT_TRUE(analysis.ValueIsDefinedAt(add));
 
-  // Verify the locations of the values. These locations are all trivial because
+  // Verify the positions of the values. These positions are all trivial because
   // there are no instructions which forward values.
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).locations(),
-              UnorderedElementsAre(HloLocation{constant1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).locations(),
-              UnorderedElementsAre(HloLocation{constant2, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(add).locations(),
-              UnorderedElementsAre(HloLocation{add, {}}));
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).positions(),
+              UnorderedElementsAre(HloPosition{constant1, {}}));
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).positions(),
+              UnorderedElementsAre(HloPosition{constant2, {}}));
+  EXPECT_THAT(analysis.GetValueDefinedAt(add).positions(),
+              UnorderedElementsAre(HloPosition{add, {}}));
 
   // Verify the uses of the values.
   EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
@@ -155,17 +158,17 @@ TEST_P(HloDataflowAnalysisTest, TupleAndGtes) {
   EXPECT_FALSE(analysis.ValueIsDefinedAt(gte1));
   EXPECT_TRUE(analysis.ValueIsDefinedAt(add));
 
-  // Verify the locations of the values.
+  // Verify the positions of the values.
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(param0).locations(),
-      UnorderedElementsAre(HloLocation{param0, {}}, HloLocation{tuple, {0}},
-                           HloLocation{gte0, {}}));
+      analysis.GetValueDefinedAt(param0).positions(),
+      UnorderedElementsAre(HloPosition{param0, {}}, HloPosition{tuple, {0}},
+                           HloPosition{gte0, {}}));
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(param1).locations(),
-      UnorderedElementsAre(HloLocation{param1, {}}, HloLocation{tuple, {1}},
-                           HloLocation{gte1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(tuple).locations(),
-              UnorderedElementsAre(HloLocation{tuple, {}}));
+      analysis.GetValueDefinedAt(param1).positions(),
+      UnorderedElementsAre(HloPosition{param1, {}}, HloPosition{tuple, {1}},
+                           HloPosition{gte1, {}}));
+  EXPECT_THAT(analysis.GetValueDefinedAt(tuple).positions(),
+              UnorderedElementsAre(HloPosition{tuple, {}}));
 
   // Verify uses. Of interest is that a GetTupleElement instruction is only a
   // use of the top-level value in the tuple operand.
@@ -200,18 +203,18 @@ TEST_P(HloDataflowAnalysisTest, NestedTuple) {
 
   EXPECT_EQ(analysis.values().size(), 4);
 
-  // Verify locations and uses.
+  // Verify positions and uses.
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(constant1).locations(),
+      analysis.GetValueDefinedAt(constant1).positions(),
       UnorderedElementsAre(
-          HloLocation{constant1, {}}, HloLocation{tuple, {0}},
-          HloLocation{nested_tuple, {0, 0}}, HloLocation{nested_tuple, {1, 0}},
-          HloLocation{nested_tuple, {2}}, HloLocation{gte_tuple, {0}},
-          HloLocation{gte_out, {}}));
-  // Constant values should have no uses though one is live out. The locations
-  // where they appear as operands are on instructions which do not use the
-  // values (eg, Tuple).
-  EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).uses().empty());
+          HloPosition{constant1, {}}, HloPosition{tuple, {0}},
+          HloPosition{nested_tuple, {0, 0}}, HloPosition{nested_tuple, {1, 0}},
+          HloPosition{nested_tuple, {2}}, HloPosition{gte_tuple, {0}},
+          HloPosition{gte_out, {}}));
+  // Constant values should have only a single use, which is the root of the
+  // computation.
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1, /*index=*/{}).uses(),
+              UnorderedElementsAre(HloUse{gte_out, 0, {0}}));
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).uses().empty());
 
   // The top-level tuple values are used in GTE instructions.
@@ -271,12 +274,11 @@ TEST_P(HloDataflowAnalysisTest, SingleCall) {
   EXPECT_EQ(analysis.GetUniqueValueAt(call), analysis.GetValueDefinedAt(add));
 
   EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
-              UnorderedElementsAre(HloUse{add, 0, {}}));
+              UnorderedElementsAre(HloUse{call, 0, {}}, HloUse{add, 0, {}}));
   EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
-              UnorderedElementsAre(HloUse{add, 1, {}}));
+              UnorderedElementsAre(HloUse{call, 1, {}}, HloUse{add, 1, {}}));
 
   EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_module());
-  EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_computation());
 }
 
 TEST_P(HloDataflowAnalysisTest, ComputationCalledTwiceWithSameArguments) {
@@ -320,18 +322,17 @@ TEST_P(HloDataflowAnalysisTest, ComputationCalledTwiceWithSameArguments) {
   EXPECT_TRUE(analysis.ValueIsDefinedAt(sub));
 
   EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
-              UnorderedElementsAre(HloUse{add, 0, {}}));
+              UnorderedElementsAre(HloUse{call1, 0, {}}, HloUse{call2, 0, {}},
+                                   HloUse{add, 0, {}}));
   EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
-              UnorderedElementsAre(HloUse{add, 1, {}}));
+              UnorderedElementsAre(HloUse{call1, 1, {}}, HloUse{call2, 1, {}},
+                                   HloUse{add, 1, {}}));
   // The Add from the subcomputation is used as both operands of the Subtract.
   EXPECT_THAT(analysis.GetValueDefinedAt(add).uses(),
               UnorderedElementsAre(HloUse{sub, 0, {}}, HloUse{sub, 1, {}}));
 
   EXPECT_FALSE(analysis.GetValueDefinedAt(add).live_out_of_module());
-  EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_computation());
-
   EXPECT_TRUE(analysis.GetValueDefinedAt(sub).live_out_of_module());
-  EXPECT_TRUE(analysis.GetValueDefinedAt(sub).live_out_of_computation());
 }
 
 TEST_P(HloDataflowAnalysisTest, ComputationCalledTwiceWithDifferentArguments) {
@@ -405,7 +406,7 @@ TEST_P(HloDataflowAnalysisTest, NestedCalls) {
   auto outer_param1 = outer_builder.AddInstruction(
       HloInstruction::CreateParameter(1, scalar_shape_, "param1"));
   // Swizzle parameters.
-  outer_builder.AddInstruction(HloInstruction::CreateCall(
+  auto nested_call = outer_builder.AddInstruction(HloInstruction::CreateCall(
       scalar_shape_, {outer_param1, outer_param0}, inner_computation));
   HloComputation* outer_computation =
       module_->AddEmbeddedComputation(outer_builder.Build());
@@ -415,7 +416,7 @@ TEST_P(HloDataflowAnalysisTest, NestedCalls) {
       HloInstruction::CreateConstant(Literal::CreateR0<float>(1.0)));
   auto constant2 = builder.AddInstruction(
       HloInstruction::CreateConstant(Literal::CreateR0<float>(2.0)));
-  builder.AddInstruction(HloInstruction::CreateCall(
+  auto call = builder.AddInstruction(HloInstruction::CreateCall(
       scalar_shape_, {constant1, constant2}, outer_computation));
   module_->AddEntryComputation(builder.Build());
 
@@ -428,10 +429,14 @@ TEST_P(HloDataflowAnalysisTest, NestedCalls) {
 
   // Verify that the uses of the constants are properly swizzled by parameter
   // permutation in nested_call.
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
-              UnorderedElementsAre(HloUse{add, 1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
-              UnorderedElementsAre(HloUse{add, 0, {}}));
+  EXPECT_THAT(
+      analysis.GetValueDefinedAt(constant1).uses(),
+      UnorderedElementsAre(HloUse{call, 0, {}}, HloUse{nested_call, 1, {}},
+                           HloUse{add, 1, {}}));
+  EXPECT_THAT(
+      analysis.GetValueDefinedAt(constant2).uses(),
+      UnorderedElementsAre(HloUse{call, 1, {}}, HloUse{nested_call, 0, {}},
+                           HloUse{add, 0, {}}));
 
   EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_module());
 }
@@ -466,7 +471,7 @@ TEST_P(HloDataflowAnalysisTest, SingleWhile) {
       HloInstruction::CreateGetTupleElement(scalar_shape_, body_param, 1));
   auto add = body_builder.AddInstruction(HloInstruction::CreateBinary(
       scalar_shape_, HloOpcode::kAdd, body_element_0, body_element_1));
-  body_builder.AddInstruction(
+  auto body_root = body_builder.AddInstruction(
       HloInstruction::CreateTuple({body_element_0, add}));
   HloComputation* body = module_->AddEmbeddedComputation(body_builder.Build());
 
@@ -493,8 +498,6 @@ TEST_P(HloDataflowAnalysisTest, SingleWhile) {
   bool ssa_form = GetParam();
   const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
 
-  EXPECT_TRUE(
-      analysis.GetValueDefinedAt(cond_constant).live_out_of_computation());
   EXPECT_FALSE(analysis.GetValueDefinedAt(cond_constant).live_out_of_module());
 
   if (ssa_form) {
@@ -514,14 +517,14 @@ TEST_P(HloDataflowAnalysisTest, SingleWhile) {
 
     EXPECT_THAT(
         analysis.GetValueDefinedAt(constant1).uses(),
-        UnorderedElementsAre(HloUse{add, 0, {}}, HloUse{xla_while, 0, {0}}));
+        UnorderedElementsAre(HloUse{add, 0, {}}, HloUse{body_root, 0, {}},
+                             HloUse{xla_while, 0, {0}}));
 
     // Constant1 passes through the body and out of the module.
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
     EXPECT_TRUE(analysis.GetValueDefinedAt(xla_while, /*index=*/{1})
                     .live_out_of_module());
 
-    EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_computation());
     EXPECT_FALSE(analysis.GetValueDefinedAt(add).live_out_of_module());
   } else {
     // While instruction and subcomputation parameters should not define values
@@ -535,7 +538,6 @@ TEST_P(HloDataflowAnalysisTest, SingleWhile) {
 
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
     EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_module());
-    EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_computation());
   }
 }
 
@@ -912,9 +914,11 @@ TEST_P(HloDataflowAnalysisTest, TupleSelect) {
                            HloUse{select12, 1, {}}));
 
   // The two constant values just pass through the Selects and are not
-  // used. They are live out however.
-  EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).uses().empty());
-  EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).uses().empty());
+  // used except at the root. They are live out however.
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+              UnorderedElementsAre(HloUse{select1234, 1, {0}}));
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+              UnorderedElementsAre(HloUse{select1234, 1, {0}}));
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).live_out_of_module());
 }
@@ -952,17 +956,17 @@ TEST_P(HloDataflowAnalysisTest, NestedTupleSelect) {
 
   EXPECT_TRUE(analysis.ValueIsDefinedAt(select));
 
-    EXPECT_THAT(HloValuesAt(select, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant4)));
-    EXPECT_THAT(HloValuesAt(select, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(inner_tuple1),
-                                     analysis.GetValueDefinedAt(inner_tuple2)));
-    EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant2),
-                                     analysis.GetValueDefinedAt(constant5)));
-    EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant3)));
+  EXPECT_THAT(HloValuesAt(select, /*index=*/{0}),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
+                                   analysis.GetValueDefinedAt(constant4)));
+  EXPECT_THAT(HloValuesAt(select, /*index=*/{1}),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(inner_tuple1),
+                                   analysis.GetValueDefinedAt(inner_tuple2)));
+  EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 0}),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(constant2),
+                                   analysis.GetValueDefinedAt(constant5)));
+  EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 1}),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(constant3)));
 }
 
 TEST_P(HloDataflowAnalysisTest, TupleSelectToWhile) {
@@ -1136,6 +1140,54 @@ TEST_P(HloDataflowAnalysisTest, TupleCopy) {
       analysis.GetValueDefinedAt(copy, /*index=*/{}).live_out_of_module());
 }
 
+TEST_P(HloDataflowAnalysisTest, SendAndSendDone) {
+  // Test that a Send forwards its operand to the output tuple at {0}.
+  auto builder = HloComputation::Builder(TestName());
+  auto param = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, scalar_shape_, "param0"));
+  auto send = builder.AddInstruction(
+      HloInstruction::CreateSend(param, /*channel_id=*/0));
+  auto send_done = builder.AddInstruction(HloInstruction::CreateSendDone(send));
+  module_->AddEntryComputation(builder.Build());
+
+  bool ssa_form = GetParam();
+  const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
+
+  EXPECT_EQ(analysis.values().size(), 4);
+
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(param));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(send, /*index=*/{}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(send, /*index=*/{0}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(send, /*index=*/{1}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(send_done));
+  EXPECT_THAT(HloValuesAt(send, /*index=*/{0}),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(param)));
+}
+
+TEST_P(HloDataflowAnalysisTest, RecvAndRecvDone) {
+  // Test that a RecvDone forwards its operand tuple element at {0} to the
+  // output.
+  auto builder = HloComputation::Builder(TestName());
+  auto recv = builder.AddInstruction(
+      HloInstruction::CreateRecv(scalar_shape_, /*channel_id=*/0));
+  auto recv_done = builder.AddInstruction(HloInstruction::CreateRecvDone(recv));
+  module_->AddEntryComputation(builder.Build());
+
+  bool ssa_form = GetParam();
+  const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
+
+  EXPECT_EQ(analysis.values().size(), 3);
+
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(recv, /*index=*/{}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(recv, /*index=*/{0}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(recv, /*index=*/{1}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(recv_done));
+  EXPECT_THAT(HloValuesAt(recv_done),
+              UnorderedElementsAre(analysis.GetValueDefinedAt(recv, {0})));
+  EXPECT_TRUE(
+      analysis.GetValueDefinedAt(recv, /*index=*/{0}).live_out_of_module());
+}
+
 TEST_P(HloDataflowAnalysisTest, ElementwiseChainInterference) {
   // A simple chain of elementwise operations. No values should interfere.
   //
@@ -1267,7 +1319,7 @@ TEST_P(HloDataflowAnalysisTest, WhileParameters_Sequential) {
 
   auto entry = module_->AddEntryComputation(builder.Build());
   bool ssa_form = GetParam();
-  const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
+  RunAnalysis(ssa_form);
 
   SequentialHloOrdering::HloModuleSequence sequence;
   sequence.insert({entry, {param, xla_while}});
@@ -1277,12 +1329,6 @@ TEST_P(HloDataflowAnalysisTest, WhileParameters_Sequential) {
   sequence.insert({body, {constant, exp, body_param, add}});
 
   SequentialHloOrdering ordering(module_.get(), sequence);
-
-  // 'add' is the body root even though later instructions follow in the order
-  // like 'dead_negate'. Only 'add' should be live out of the computation.
-  EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_computation());
-  EXPECT_FALSE(
-      analysis.GetValueDefinedAt(dead_negate).live_out_of_computation());
 
   // 'add' is live out of the body and will interfere with an later instructions
   // such as 'dead_constant' and 'dead_negate'.
