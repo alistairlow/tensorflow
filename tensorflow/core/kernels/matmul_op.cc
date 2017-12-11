@@ -587,13 +587,13 @@ class MatMulOp<CPUDevice, float, false> : public OpKernel {
     arm_compute::CLTensor arm_a, arm_b, arm_out;
     arm_compute::TensorShape shape_a{a.dim_size(!transpose_a_), a.dim_size(transpose_a_)},
       shape_b{b.dim_size(!transpose_b_), b.dim_size(transpose_b_)},
-      shape_out{out->dim_size(0), out->dim_size(1)};
+      shape_out{out->dim_size(1), out->dim_size(0)};
 
     arm_a.allocator()->init(arm_compute::TensorInfo(shape_a, 1, arm_compute::DataType::F32));
     arm_b.allocator()->init(arm_compute::TensorInfo(shape_b, 1, arm_compute::DataType::F32));
     arm_out.allocator()->init(arm_compute::TensorInfo(shape_out, 1, arm_compute::DataType::F32));
 
-    arm_gemm.configure(&arm_a, &arm_b, nullptr, &arm_out, 1.0f, 1.0f);
+    arm_gemm.configure(&arm_a, &arm_b, nullptr, &arm_out, 1.0f, 0.0f);
 
     arm_a.allocator()->allocate();
     arm_b.allocator()->allocate();
@@ -601,7 +601,7 @@ class MatMulOp<CPUDevice, float, false> : public OpKernel {
 
     // Here, because ACL expects ji ordering while TF is ij, we use !transpose to
     // determine whether to swap or not
-    fill_with_window(a, arm_a, !transpose_a_); fill_with_window(b, arm_b, !transpose_b_);
+    fill_with_window(a, arm_a, transpose_a_); fill_with_window(b, arm_b, transpose_b_);
     arm_gemm.run();
 
     arm_compute::CLScheduler::get().sync();
@@ -611,7 +611,7 @@ class MatMulOp<CPUDevice, float, false> : public OpKernel {
     arm_compute::Iterator out_it(&arm_out, out_win);
     auto eigen_out = out->flat<float>();
     arm_compute::execute_window_loop(out_win, [&] (arm_compute::Coordinates& c) {
-      eigen_out.data()[c.x() * out->shape().dim_size(1) + c.y()] =
+      eigen_out.data()[c.x() * out->shape().dim_size(0) + c.y()] =
           *reinterpret_cast<float*>(out_it.ptr());
     }, out_it);
     arm_out.unmap();
