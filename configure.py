@@ -30,7 +30,8 @@ try:
 except ImportError:
   from distutils.spawn import find_executable as which
 
-_TF_BAZELRC = '.tf_configure.bazelrc'
+_TF_BAZELRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '.tf_configure.bazelrc')
 _DEFAULT_CUDA_VERSION = '8.0'
 _DEFAULT_CUDNN_VERSION = '6'
 _DEFAULT_CUDA_COMPUTE_CAPABILITIES = '3.5,5.2'
@@ -948,6 +949,15 @@ def set_mkl():
       'downloading, please set the environment variable \"TF_MKL_ROOT\" every '
       'time before build.')
 
+def set_acl():
+  # Set up for ARM Compute Library
+  write_to_bazelrc('build:acl --define using_acl=true')
+  write_to_bazelrc('build:acl -c opt')
+  write_to_bazelrc('build:acl --copt="-DARM_COMPUTE_CL"')
+  write_to_bazelrc('build:acl --copt="-DARM_COMPUTE_NO_EXCEPTIONS"')
+  print('Add "--config=acl" to your bazel command to build with ARM '
+        'Compute Library support.\nPlease set the environment variable '
+        '\"TF_ACL_ROOT\" every time before build.')
 
 def set_monolithic():
   # Add --config=monolithic to your bazel command to use a mostly-static
@@ -987,9 +997,9 @@ def main():
   set_build_var(environ_cp, 'TF_NEED_JEMALLOC', 'jemalloc as malloc',
                 'with_jemalloc', True)
   set_build_var(environ_cp, 'TF_NEED_GCP', 'Google Cloud Platform',
-                'with_gcp_support', False, 'gcp')
+                'with_gcp_support', True, 'gcp')
   set_build_var(environ_cp, 'TF_NEED_HDFS', 'Hadoop File System',
-                'with_hdfs_support', False, 'hdfs')
+                'with_hdfs_support', True, 'hdfs')
   set_build_var(environ_cp, 'TF_ENABLE_XLA', 'XLA JIT', 'with_xla_support',
                 False, 'xla')
   set_build_var(environ_cp, 'TF_NEED_GDR', 'GDR', 'with_gdr_support',
@@ -1029,6 +1039,7 @@ def main():
 
   set_cc_opt_flags(environ_cp)
   set_mkl()
+  set_acl()
   set_monolithic()
 
 

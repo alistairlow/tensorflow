@@ -667,6 +667,10 @@ py_test(
     size = "medium",
     srcs = ["_impl/keras/estimator_test.py"],
     srcs_version = "PY2AND3",
+    tags = [
+        "noasan",
+        "notsan",
+    ],
     deps = [
         ":keras",
         "//tensorflow/python:client_testlib",
