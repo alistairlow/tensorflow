@@ -976,7 +976,7 @@ def set_acl():
   write_to_bazelrc('build:acl --define using_acl=true')
   write_to_bazelrc('build:acl -c opt')
   write_to_bazelrc('build:acl --copt="-DARM_COMPUTE_CL"')
-  write_to_bazelrc('build:acl --copt="-DARM_NO_EXCEPTIONS"')
+  write_to_bazelrc('build:acl --copt="-DARM_COMPUTE_NO_EXCEPTIONS"')
   print('Add "--config=acl" to your bazel command to build with ARM '
         'Compute Library support.\nPlease set the environment variable '
         '\"TF_ACL_ROOT\" every time before build.')
@@ -1058,6 +1058,8 @@ def main():
       set_computecpp_toolkit_path(environ_cp)
     else:
       set_trisycl_include_dir(environ_cp)
+    set_action_env_var(environ_cp, 'TF_USE_DOUBLE_SYCL', 'double types in SYCL', True)
+    set_action_env_var(environ_cp, 'TF_USE_HALF_SYCL', 'half types in SYCL', False)
 
   set_action_env_var(environ_cp, 'TF_NEED_CUDA', 'CUDA', False)
   if (environ_cp.get('TF_NEED_CUDA') == '1' and
