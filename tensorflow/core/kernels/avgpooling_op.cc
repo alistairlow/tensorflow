@@ -59,7 +59,9 @@ class AvgPoolingOp : public UnaryOp<T> {
                 errors::InvalidArgument("Invalid data format"));
     OP_REQUIRES(
         context, data_format_ == FORMAT_NHWC,
-        errors::InvalidArgument("Default AvgPoolingOp only supports NHWC."));
+        errors::InvalidArgument("Default AvgPoolingOp only supports NHWC ",
+                                "on device type ",
+                                DeviceTypeString(context->device_type())));
     OP_REQUIRES_OK(context, context->GetAttr("ksize", &ksize_));
     OP_REQUIRES(context, ksize_.size() == 4,
                 errors::InvalidArgument("Sliding window ksize field must "
@@ -370,9 +372,14 @@ class AvgPoolingOp<SYCLDevice, T> : public UnaryOp<T> {
   Padding padding_;
   TensorFormat data_format_;
 };
-REGISTER_KERNEL_BUILDER(
-    Name("AvgPool").Device(DEVICE_SYCL).TypeConstraint<float>("T"),
-    AvgPoolingOp<SYCLDevice, float>);
+
+#define REGISTER_AVGPOOL_SYCL(type)                                       \
+REGISTER_KERNEL_BUILDER(Name("AvgPool")                                   \
+                            .Device(DEVICE_SYCL)                          \
+                            .TypeConstraint<type>("T"),                   \
+                        AvgPoolingOp<SYCLDevice, type>);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_AVGPOOL_SYCL);
+#undef REGISTER_AVGPOOL_SYCL
 #endif  // TENSORFLOW_USE_SYCL
 
 // The operation to compute AvgPool gradients.
@@ -388,9 +395,11 @@ class AvgPoolingGradOp : public OpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("data_format", &data_format));
     OP_REQUIRES(context, FormatFromString(data_format, &data_format_),
                 errors::InvalidArgument("Invalid data format"));
-    OP_REQUIRES(context, data_format_ == FORMAT_NHWC,
-                errors::InvalidArgument(
-                    "Default AvgPoolingGradOp only supports NHWC."));
+    OP_REQUIRES(
+        context, data_format_ == FORMAT_NHWC,
+        errors::InvalidArgument("Default AvgPoolingGradOp only supports NHWC ",
+                                "on device type ",
+                                DeviceTypeString(context->device_type())));
     OP_REQUIRES_OK(context, context->GetAttr("ksize", &ksize_));
     OP_REQUIRES(context, ksize_.size() == 4,
                 errors::InvalidArgument("Sliding window ksize field must "
@@ -924,11 +933,14 @@ class AvgPoolingGradOp<SYCLDevice, T> : public OpKernel {
   TensorFormat data_format_;
 };
 
-REGISTER_KERNEL_BUILDER(Name("AvgPoolGrad")
-                            .Device(DEVICE_SYCL)
-                            .TypeConstraint<float>("T")
-                            .HostMemory("orig_input_shape"),
-                        AvgPoolingGradOp<SYCLDevice, float>);
+#define REGISTER_AVGPOOLGRAD_SYCL(type)                                   \
+REGISTER_KERNEL_BUILDER(Name("AvgPoolGrad")                               \
+                            .Device(DEVICE_SYCL)                          \
+                            .TypeConstraint<type>("T")                    \
+                            .HostMemory("orig_input_shape"),              \
+                        AvgPoolingGradOp<SYCLDevice, type>);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_AVGPOOLGRAD_SYCL);
+#undef REGISTER_AVGPOOLGRAD_SYCL
 #endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

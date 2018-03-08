@@ -64,15 +64,16 @@ def get_device_compiler_flags(compiler_flags):
       '-Xclang', '-cl-mad-enable',
       '-DTENSORFLOW_USE_SYCL=1',
       '-DEIGEN_USE_SYCL=1',
-      '-DEIGEN_HAS_C99_MATH',
-      '-mllvm', '-inline-threshold=10000',
+      '-DEIGEN_HAS_C99_MATH=1',
+      '-DEIGEN_HAS_CXX11_MATH=1',
+      '-DDISABLE_SKINNY=1',
   ]
   return compiler_flags + computecpp_flags
 
 def checkComputeCppIsSupported():
   outputList = check_output([COMPUTECPP_DRIVER, '--version']).decode('utf-8').split(" ")
   ccpp_version_idx = outputList.index('Device') - 1
-  cpp_version = outputList[ccpp_version_idx];
+  cpp_version = outputList[ccpp_version_idx]
   cppVersionList = cpp_version.split(".")
   if int(cppVersionList[0]) == 0 and int(cppVersionList[1]) < 5:
     print("Error: ComputeCpp {} is not compatible with the current version of Tensorflow, "
@@ -100,6 +101,13 @@ def useDriver(compiler_flags):
     return call([CPU_C_COMPILER] + compiler_flags)
 
   if is_external(compiled_file_name, output_file_name):
+    if('g++' == CPU_CXX_COMPILER or '/g++' in CPU_CXX_COMPILER):
+      # If compiling with gcc, need to add the flag to force the compiler to
+      # report included dependencies according to the directory specified by
+      # the include flags. By default gcc will use either a relative or
+      # absolute path depending on which is shortest, and that confuses bazel's
+      # header dependency checking.
+      compiler_flags += ['-fno-canonical-system-headers']
     return call([CPU_CXX_COMPILER] + compiler_flags)
 
   filename, file_extension = os.path.splitext(output_file_name)
@@ -107,20 +115,6 @@ def useDriver(compiler_flags):
   computecpp_device_compiler_flags = get_device_compiler_flags(compiler_flags)
 
   x = call([COMPUTECPP_DRIVER] + computecpp_device_compiler_flags)
-
-  # FIXME(lukeiwanski): throw the sycl line from that dep file
-  # that will be fixed in next driver
-  dep_file_index = compiler_flags.index('-MF') + 1
-  dep_file_name = compiler_flags[dep_file_index]
-
-  f = open(dep_file_name,"r+")
-  d = f.readlines()
-  f.seek(0)
-  for i in d:
-      if ".sycl" not in i:
-          f.write(i)
-  f.truncate()
-  f.close()
 
   return x
 

@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import collections
 import copy
 
 from tensorflow.contrib import learn
@@ -163,7 +164,7 @@ def extract_features(features, feature_columns):
     scope = "gbdt"
     with variable_scope.variable_scope(scope):
       feature_columns = list(feature_columns)
-      transformed_features = {}
+      transformed_features = collections.OrderedDict()
       for fc in feature_columns:
         # pylint: disable=protected-access
         if isinstance(fc, feature_column_lib._EmbeddingColumn):
@@ -322,9 +323,11 @@ class GradientBoostedDecisionTreeModel(object):
     self._feature_columns = feature_columns
     self._learner_config_serialized = learner_config.SerializeToString()
     self._attempted_trees = variables.Variable(
-        initial_value=array_ops.zeros([], dtypes.int64), trainable=False)
+        initial_value=array_ops.zeros([], dtypes.int64), trainable=False,
+        name="attempted_trees")
     self._finalized_trees = variables.Variable(
-        initial_value=array_ops.zeros([], dtypes.int64), trainable=False)
+        initial_value=array_ops.zeros([], dtypes.int64), trainable=False,
+        name="finalized_trees")
     if not features:
       raise ValueError("Features dictionary must be specified.")
     (fc_names, dense_floats, sparse_float_indices, sparse_float_values,
@@ -679,13 +682,13 @@ class GradientBoostedDecisionTreeModel(object):
                               control_flow_ops.no_op))
 
     # Update handler stats.
-    handler_reads = {}
+    handler_reads = collections.OrderedDict()
     for handler in handlers:
       handler_reads[handler] = handler.scheduled_reads()
 
     handler_results = batch_ops_utils.run_handler_scheduled_ops(
         handler_reads, ensemble_stamp, worker_device)
-    per_handler_updates = {}
+    per_handler_updates = collections.OrderedDict()
     # Two values per handler. First one is if the handler is active for the
     # current layer. The second one is if the handler is going to be active
     # for the next layer.
@@ -739,7 +742,7 @@ class GradientBoostedDecisionTreeModel(object):
     # Accumulate a step after updating stats.
     batch_size = math_ops.cast(array_ops.shape(labels)[0], dtypes.float32)
     with ops.control_dependencies(stats_update_ops):
-      add_step_op = steps_accumulator.add(ensemble_stamp, [0], [0],
+      add_step_op = steps_accumulator.add(ensemble_stamp, [0], [[0, 0]],
                                           [batch_size], [1.0])
 
     # Determine learning rate.
@@ -892,7 +895,9 @@ class GradientBoostedDecisionTreeModel(object):
 
       # Accumulate gradients and hessians.
       partition_ids = math_ops.range(self._logits_dimension)
-      feature_ids = array_ops.zeros_like(partition_ids, dtype=dtypes.int64)
+      feature_ids = array_ops.zeros(
+          [self._logits_dimension, 2], dtype=dtypes.int64)
+
       add_stats_op = bias_stats_accumulator.add(
           ensemble_stamp, partition_ids, feature_ids, grads_sum, hess_sum)
       return control_flow_ops.group(*[add_stats_op], name="update_bias_stats")

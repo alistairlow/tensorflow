@@ -12,8 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
-#define THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
+#ifndef TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
+#define TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
 
 #include <memory>
 #include <string>
@@ -63,7 +63,7 @@ class TestRunner {
   // Run the model.
   virtual void Invoke() = 0;
 
-  // Verify that the contents of all ouputs conform to the existing
+  // Verify that the contents of all outputs conform to the existing
   // expectations. Return true if there are no expectations or they are all
   // satisfied.
   virtual bool CheckResults() = 0;
@@ -121,4 +121,4 @@ class TestRunner {
 
 }  // namespace testing
 }  // namespace tflite
-#endif  // THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
+#endif  // TENSORFLOW_CONTRIB_LITE_TESTING_TEST_RUNNER_H_
