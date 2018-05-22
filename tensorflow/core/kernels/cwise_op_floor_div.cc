@@ -42,6 +42,13 @@ REGISTER_KERNEL_BUILDER(Name("FloorDiv")
 #endif
 
 #ifdef TENSORFLOW_USE_SYCL
+REGISTER4(BinaryOp, SYCL, "FloorDiv", functor::floor_div, uint8, uint16, int16,
+          int64);
+#define REGISTER_SYCL(type) \
+  REGISTER(BinaryOp, SYCL, "FloorDiv", functor::floor_div_real, type);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#undef REGISTER_SYCL
+
 REGISTER_KERNEL_BUILDER(Name("FloorDiv")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")
@@ -49,5 +56,5 @@ REGISTER_KERNEL_BUILDER(Name("FloorDiv")
                             .HostMemory("z")
                             .TypeConstraint<int32>("T"),
                         BinaryOp<CPUDevice, functor::safe_floor_div<int32>>);
-#endif // TENSORFLOW_USE_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

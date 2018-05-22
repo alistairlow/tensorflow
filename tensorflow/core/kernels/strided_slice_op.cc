@@ -297,6 +297,11 @@ class StridedSliceAssignOp : public OpKernel {
       OP_REQUIRES_OK(context,
                      LookupResource(context, HandleFromInput(context, 0), &v));
       old_lhs = *v->tensor();
+      OP_REQUIRES(context, old_lhs.dtype() == DataTypeToEnum<T>::value,
+                  errors::InvalidArgument(
+                      "l-value dtype ", DataTypeString(old_lhs.dtype()),
+                      " does not match r-value dtype ",
+                      DataTypeString(DataTypeToEnum<T>::value)));
     } else {
       context->forward_ref_input_to_ref_output(0, 0);
       old_lhs = context->mutable_input(0, true);
@@ -389,7 +394,6 @@ class StridedSliceAssignOp : public OpKernel {
                           StridedSliceAssignOp<CPUDevice, type>)
 
 TF_CALL_ALL_TYPES(REGISTER_STRIDED_SLICE);
-REGISTER_STRIDED_SLICE(bfloat16);
 
 #undef REGISTER_STRIDED_SLICE
 
@@ -430,6 +434,7 @@ REGISTER_STRIDED_SLICE(bfloat16);
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU);
 TF_CALL_complex64(REGISTER_GPU);
 TF_CALL_complex128(REGISTER_GPU);
+TF_CALL_int64(REGISTER_GPU);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
@@ -506,7 +511,7 @@ REGISTER_KERNEL_BUILDER(Name("ResourceStridedSliceAssign")
                               .HostMemory("strides"),             \
                           StridedSliceAssignOp<SYCLDevice, type>)
 
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SYCL);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 
 REGISTER_KERNEL_BUILDER(Name("StridedSlice")
                             .Device(DEVICE_SYCL)

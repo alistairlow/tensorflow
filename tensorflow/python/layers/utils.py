@@ -24,6 +24,7 @@ from tensorflow.python.ops import variables
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_util
+from tensorflow.python.util import nest
 
 
 def convert_data_format(data_format, ndim):
@@ -80,7 +81,7 @@ def normalize_tuple(value, n, name):
     for single_value in value_tuple:
       try:
         int(single_value)
-      except ValueError:
+      except (ValueError, TypeError):
         raise ValueError('The `' + name + '` argument must be a tuple of ' +
                          str(n) + ' integers. Received: ' + str(value) + ' '
                          'including element ' + str(single_value) + ' of type' +
@@ -207,7 +208,7 @@ def smart_cond(pred, fn1, fn2, name=None):
     else:
       return fn2()
   else:
-    return control_flow_ops.cond(pred, fn1, fn2, name)
+    return control_flow_ops.cond(pred, true_fn=fn1, false_fn=fn2, name=name)
 
 
 def constant_value(pred):
@@ -215,7 +216,7 @@ def constant_value(pred):
 
   Arguments:
     pred: A scalar, either a Python bool or a TensorFlow boolean variable
-      or tensor.
+      or tensor, or the Python integer 1 or 0.
 
   Returns:
     True or False if `pred` has a constant boolean value, None otherwise.
@@ -223,6 +224,12 @@ def constant_value(pred):
   Raises:
     TypeError: If `pred` is not a Variable, Tensor or bool.
   """
+  # Allow integer booleans.
+  if pred == 0:
+    pred = False
+  elif pred == 1:
+    pred = True
+
   if isinstance(pred, bool):
     pred_value = pred
   elif isinstance(pred, variables.Variable):
@@ -232,3 +239,61 @@ def constant_value(pred):
   else:
     raise TypeError('`pred` must be a Tensor, a Variable, or a Python bool.')
   return pred_value
+
+
+def object_list_uid(object_list):
+  """Creates a single string from object ids."""
+  object_list = nest.flatten(object_list)
+  return ', '.join([str(abs(id(x))) for x in object_list])
+
+
+def static_shape(x):
+  """Get the static shape of a Tensor, or None if it is unavailable."""
+  if x is None:
+    return None
+  try:
+    return tuple(x.get_shape().as_list())
+  except ValueError:
+    return None
+
+
+def get_reachable_from_inputs(inputs, targets=None):
+  """Returns the set of tensors reachable from `inputs`.
+
+  Stops if all targets have been found (target is optional).
+
+  Only valid in Symbolic mode, not Eager mode.
+
+  Args:
+    inputs: List of tensors.
+    targets: List of tensors.
+
+  Returns:
+    A set of tensors reachable from the inputs (includes the inputs themselves).
+  """
+  reachable = set(inputs)
+  if targets:
+    targets = set(targets)
+  queue = inputs[:]
+
+  while queue:
+    x = queue.pop()
+    outputs = []
+    try:
+      consumers = x.consumers()
+    except AttributeError:
+      # Case where x is a variable type
+      consumers = [x.op]
+    for z in consumers:
+      consumer_outputs = z.outputs
+      if consumer_outputs:  # May be None
+        outputs += consumer_outputs
+
+    for y in outputs:
+      if y not in reachable:
+        reachable.add(y)
+        queue.insert(0, y)
+
+    if targets and targets.issubset(reachable):
+      return reachable
+  return reachable

@@ -23,6 +23,7 @@ from __future__ import print_function
 # pylint: disable=unused-import,wildcard-import,line-too-long,g-importing-member
 
 from tensorflow.contrib.distributions.python.ops import bijectors
+from tensorflow.contrib.distributions.python.ops.autoregressive import *
 from tensorflow.contrib.distributions.python.ops.binomial import *
 from tensorflow.contrib.distributions.python.ops.cauchy import *
 from tensorflow.contrib.distributions.python.ops.chi2 import *
@@ -36,6 +37,7 @@ from tensorflow.contrib.distributions.python.ops.distribution_util import softpl
 from tensorflow.contrib.distributions.python.ops.distribution_util import tridiag
 from tensorflow.contrib.distributions.python.ops.estimator import *
 from tensorflow.contrib.distributions.python.ops.geometric import *
+from tensorflow.contrib.distributions.python.ops.half_normal import *
 from tensorflow.contrib.distributions.python.ops.independent import *
 from tensorflow.contrib.distributions.python.ops.inverse_gamma import *
 from tensorflow.contrib.distributions.python.ops.logistic import *
@@ -83,6 +85,7 @@ from tensorflow.python.ops.distributions.uniform import *
 from tensorflow.python.util.all_util import remove_undocumented
 
 _allowed_symbols = [
+    'auto_correlation',
     'bijectors',
     'Cauchy',
     'ConditionalDistribution',
@@ -91,9 +94,9 @@ _allowed_symbols = [
     'NOT_REPARAMETERIZED',
     'ReparameterizationType',
     'Distribution',
+    'Autoregressive',
     'Binomial',
     'Bernoulli',
-    'BernoulliWithSigmoidProbs',
     'Beta',
     'BetaWithSoftplusConcentration',
     'Categorical',
@@ -107,6 +110,7 @@ _allowed_symbols = [
     'Gamma',
     'GammaWithSoftplusConcentrationRate',
     'Geometric',
+    'HalfNormal',
     'Independent',
     'InverseGamma',
     'InverseGammaWithSoftplusConcentrationRate',
@@ -157,6 +161,10 @@ _allowed_symbols = [
     'assign_log_moving_mean_exp',
     'moving_mean_variance',
     'estimator_head_distribution_regression',
+    'quadrature_scheme_softmaxnormal_gauss_hermite',
+    'quadrature_scheme_softmaxnormal_quantiles',
+    'quadrature_scheme_lognormal_gauss_hermite',
+    'quadrature_scheme_lognormal_quantiles',
 ]
 
 remove_undocumented(__name__, _allowed_symbols)

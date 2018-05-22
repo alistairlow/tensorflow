@@ -15,10 +15,10 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "tensorflow/core/kernels/tile_functor.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/kernels/tile_functor.h"
 
 namespace tensorflow {
 
@@ -148,7 +148,7 @@ struct TileFunctor<SYCLDevice, T> {
     // needed for the kernel to compute the tile indices.
     cl::sycl::buffer<int64, 2> stride_buffer(cl::sycl::range<2>(3, ndims));
     auto stride_host = stride_buffer.template get_access<
-        cl::sycl::access::mode::write, cl::sycl::access::target::host_buffer>();
+        cl::sycl::access::mode::write>();
     for (int i = 0; i < ndims; ++i) {
       stride_host[cl::sycl::id<2>(0, i)] = in_strides[i];
       stride_host[cl::sycl::id<2>(1, i)] = out_strides[i];
@@ -174,8 +174,7 @@ struct TileFunctor<SYCLDevice, T> {
   template struct Tile<SYCLDevice, T, int64>;
 
 TF_CALL_bool(DEFINE_TYPE);
-TF_CALL_float(DEFINE_TYPE);
-TF_CALL_double(DEFINE_TYPE);
+TF_CALL_SYCL_NUMBER_TYPES(DEFINE_TYPE);
 TF_CALL_uint8(DEFINE_TYPE);
 TF_CALL_int32(DEFINE_TYPE);
 TF_CALL_int16(DEFINE_TYPE);

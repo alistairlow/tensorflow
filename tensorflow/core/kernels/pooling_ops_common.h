@@ -149,7 +149,9 @@ class MaxPoolingOp : public OpKernel {
                   errors::InvalidArgument("Invalid data format"));
       OP_REQUIRES(
           context, data_format_ == FORMAT_NHWC,
-          errors::InvalidArgument("Default MaxPoolingOp only supports NHWC."));
+          errors::InvalidArgument("Default MaxPoolingOp only supports NHWC ",
+                                  "on device type ",
+                                  DeviceTypeString(context->device_type())));
     } else {
       data_format_ = FORMAT_NHWC;
     }
@@ -256,7 +258,6 @@ class MaxPoolingOp : public OpKernel {
       //    and updates the corresponding column(s) in output_as_matrix with the
       //    max value.
       auto shard = [&params, &in_mat, &out_mat](int64 start, int64 limit) {
-
         const int32 in_rows = params.tensor_in_rows;
         const int32 in_cols = params.tensor_in_cols;
         const int32 pad_rows = params.pad_rows;
@@ -504,7 +505,6 @@ class MaxPoolingV2Op : public OpKernel {
       //    and updates the corresponding column(s) in output_as_matrix with the
       //    max value.
       auto shard = [&params, &in_mat, &out_mat](int64 start, int64 limit) {
-
         const int32 in_rows = params.tensor_in_rows;
         const int32 in_cols = params.tensor_in_cols;
         const int32 pad_rows = params.pad_rows;

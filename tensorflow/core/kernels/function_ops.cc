@@ -53,6 +53,8 @@ class ArgOp : public OpKernel {
     ctx->set_output(0, val);
   }
 
+  bool IsExpensive() override { return false; }
+
  private:
   int index_;
   DataType dtype_;
@@ -78,6 +80,8 @@ class RetvalOp : public OpKernel {
     OP_REQUIRES_OK(ctx, frame->SetRetval(index_, val));
   }
 
+  bool IsExpensive() override { return false; }
+
  private:
   int index_;
   DataType dtype_;
@@ -88,11 +92,16 @@ class RetvalOp : public OpKernel {
 REGISTER_SYSTEM_KERNEL_BUILDER(Name("_Arg").Device(DEVICE_CPU), ArgOp);
 REGISTER_SYSTEM_KERNEL_BUILDER(Name("_Retval").Device(DEVICE_CPU), RetvalOp);
 
-#if TENSORFLOW_USE_SYCL
+#ifdef TENSORFLOW_USE_SYCL
 #define REGISTER(type)     \
   REGISTER_KERNEL_BUILDER( \
       Name("_Arg").Device(DEVICE_SYCL).TypeConstraint<type>("T"), ArgOp);
-TF_CALL_NUMBER_TYPES_NO_INT32(REGISTER)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER);
+TF_CALL_int64(REGISTER);
+TF_CALL_uint16(REGISTER);
+TF_CALL_int16(REGISTER);
+TF_CALL_uint8(REGISTER);
+TF_CALL_int8(REGISTER);
 TF_CALL_bool(REGISTER) REGISTER_KERNEL_BUILDER(Name("_Arg")
                                                    .Device(DEVICE_SYCL)
                                                    .HostMemory("output")
@@ -103,7 +112,12 @@ TF_CALL_bool(REGISTER) REGISTER_KERNEL_BUILDER(Name("_Arg")
   REGISTER_KERNEL_BUILDER(                                           \
       Name("_Retval").Device(DEVICE_SYCL).TypeConstraint<type>("T"), \
       RetvalOp);
-TF_CALL_NUMBER_TYPES_NO_INT32(REGISTER)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER);
+TF_CALL_int64(REGISTER);
+TF_CALL_uint16(REGISTER);
+TF_CALL_int16(REGISTER);
+TF_CALL_uint8(REGISTER);
+TF_CALL_int8(REGISTER);
 TF_CALL_bool(REGISTER) REGISTER_KERNEL_BUILDER(Name("_Retval")
                                                    .Device(DEVICE_SYCL)
                                                    .HostMemory("input")
@@ -201,8 +215,7 @@ REGISTER_KERNEL_BUILDER(Name("_ArrayToList")
       Name("_ArrayToList").Device(DEVICE_SYCL).TypeConstraint<type>("T"), \
       PassOn);
 
-REGISTER_SYCL_KERNELS(float);
-REGISTER_SYCL_KERNELS(double);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNELS);
 
 #undef REGISTER_SYCL_KERNELS
 
@@ -249,22 +262,21 @@ class SymbolicGradientOp : public AsyncOpKernel {
       args.push_back(ctx->input(i));
     }
     std::vector<Tensor>* rets = new std::vector<Tensor>;
-    lib->Run(
-        opts, handle, args, rets, [ctx, done, rets](const Status& status) {
-          if (!status.ok()) {
-            ctx->SetStatus(status);
-          } else if (rets->size() != ctx->num_outputs()) {
-            ctx->SetStatus(errors::InvalidArgument(
-                "SymGrad expects to return ", ctx->num_outputs(),
-                " tensor(s), but get ", rets->size(), " tensor(s) instead."));
-          } else {
-            for (size_t i = 0; i < rets->size(); ++i) {
-              ctx->set_output(i, (*rets)[i]);
-            }
-          }
-          delete rets;
-          done();
-        });
+    lib->Run(opts, handle, args, rets, [ctx, done, rets](const Status& status) {
+      if (!status.ok()) {
+        ctx->SetStatus(status);
+      } else if (rets->size() != ctx->num_outputs()) {
+        ctx->SetStatus(errors::InvalidArgument(
+            "SymGrad expects to return ", ctx->num_outputs(),
+            " tensor(s), but get ", rets->size(), " tensor(s) instead."));
+      } else {
+        for (size_t i = 0; i < rets->size(); ++i) {
+          ctx->set_output(i, (*rets)[i]);
+        }
+      }
+      delete rets;
+      done();
+    });
   }
 
  private:
@@ -292,21 +304,21 @@ class RemoteCallOp : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override {
     const Tensor* target;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->input("target", &target), done);
-    AttrValueMap attr_values = func_.attr();
-    AttrValue v;
     const string& target_device =
         DeviceNameUtils::CanonicalizeDeviceName(target->scalar<string>()());
-    v.set_s(target_device);
-    AddAttr("_target", v, &attr_values);
 
     FunctionLibraryRuntime* lib = ctx->function_library();
     OP_REQUIRES_ASYNC(ctx, lib != nullptr,
                       errors::Internal("No function library is provided."),
                       done);
+    AttrValueMap attr_values = func_.attr();
+    FunctionLibraryRuntime::InstantiateOptions instantiate_opts;
+    instantiate_opts.target = target_device;
     FunctionLibraryRuntime::Handle handle;
-    OP_REQUIRES_OK_ASYNC(
-        ctx, lib->Instantiate(func_.name(), AttrSlice(&attr_values), &handle),
-        done);
+    OP_REQUIRES_OK_ASYNC(ctx,
+                         lib->Instantiate(func_.name(), AttrSlice(&attr_values),
+                                          instantiate_opts, &handle),
+                         done);
 
     OpInputList arguments;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->input_list("args", &arguments), done);
@@ -318,7 +330,7 @@ class RemoteCallOp : public AsyncOpKernel {
     if (opts.source_device != target_device) {
       opts.remote_execution = true;
     }
-    opts.rendezvous = ctx->rendezvous();
+    opts.create_rendezvous = true;
     std::vector<Tensor> args;
     args.reserve(arguments.size());
     for (const Tensor& argument : arguments) {

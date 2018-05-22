@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/cpu_info.h"
+#include "tensorflow/core/platform/mem.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -48,6 +49,11 @@ DeviceProperties GetLocalCPUInfo() {
   device.set_l2_cache_size(Eigen::l2CacheSize());
   device.set_l3_cache_size(Eigen::l3CacheSize());
 
+  int64 free_mem = port::AvailableRam();
+  if (free_mem < INT64_MAX) {
+    device.set_memory_size(free_mem);
+  }
+
   (*device.mutable_environment())["cpu_instruction_set"] =
       Eigen::SimdInstructionSetsInUse();
 
@@ -62,9 +68,9 @@ DeviceProperties GetLocalCPUInfo() {
 
 DeviceProperties GetLocalGPUInfo(int gpu_id) {
   DeviceProperties device;
-  device.set_type("GPU");
 
 #if GOOGLE_CUDA
+  device.set_type("GPU");
   cudaDeviceProp properties;
   cudaError_t error = cudaGetDeviceProperties(&properties, gpu_id);
   if (error == cudaSuccess) {
@@ -95,6 +101,11 @@ DeviceProperties GetLocalGPUInfo(int gpu_id) {
   (*device.mutable_environment())["cuda"] = strings::StrCat(CUDA_VERSION);
   (*device.mutable_environment())["cudnn"] = strings::StrCat(CUDNN_VERSION);
 #endif
+#ifdef TENSORFLOW_USE_SYCL
+  device.set_type("SYCL");
+  device.set_vendor("SYCL Device");
+  device.set_num_cores(1024);
+#endif
 
   return device;
 }
@@ -102,7 +113,7 @@ DeviceProperties GetLocalGPUInfo(int gpu_id) {
 DeviceProperties GetDeviceInfo(const DeviceNameUtils::ParsedName& device) {
   if (device.type == "CPU") {
     return GetLocalCPUInfo();
-  } else if (device.type == "GPU") {
+  } else if (device.type == "GPU" || device.type == "SYCL") {
     if (device.has_id) {
       return GetLocalGPUInfo(device.id);
     } else {

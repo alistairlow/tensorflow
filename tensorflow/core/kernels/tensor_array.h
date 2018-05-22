@@ -73,7 +73,7 @@ TF_CALL_complex128(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
 #ifdef TENSORFLOW_USE_SYCL
 #define TENSOR_ARRAY_WRITE_OR_ADD_SYCL(T) \
   TENSOR_ARRAY_WRITE_OR_ADD(SYCLDevice, T)
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(TENSOR_ARRAY_WRITE_OR_ADD_SYCL);
+TF_CALL_SYCL_NUMBER_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_SYCL);
 #undef TENSOR_ARRAY_WRITE_OR_ADD_SYCL
 #endif  // TENSORFLOW_USE_SYCL
 
@@ -106,7 +106,7 @@ TF_CALL_complex128(TENSOR_ARRAY_SET_ZERO_GPU);
 
 #ifdef TENSORFLOW_USE_SYCL
 #define TENSOR_ARRAY_SET_ZERO_SYCL(T) TENSOR_ARRAY_SET_ZERO(SYCLDevice, T)
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(TENSOR_ARRAY_SET_ZERO_SYCL);
+TF_CALL_SYCL_NUMBER_TYPES(TENSOR_ARRAY_SET_ZERO_SYCL);
 #undef TENSOR_ARRAY_SET_ZERO_SYCL
 #endif  // TENSORFLOW_USE_SYCL
 
@@ -154,8 +154,9 @@ class TensorArray : public ResourceBase {
   // users to construct this many Tensors for storage in a TensorArray.
   TensorArray(const string& key, const DataType& dtype, const Tensor& handle,
               int32 N, const PartialTensorShape& element_shape,
-              bool dynamic_size, bool multiple_writes_aggregate, bool is_grad,
-              int32 marked_size, bool clear_after_read)
+              bool identical_element_shapes, bool dynamic_size,
+              bool multiple_writes_aggregate, bool is_grad, int32 marked_size,
+              bool clear_after_read)
       : key_(key),
         dtype_(dtype),
         handle_(handle),
@@ -167,6 +168,7 @@ class TensorArray : public ResourceBase {
         is_grad_(is_grad),
         marked_size_(marked_size),
         element_shape_(element_shape),
+        identical_element_shapes_(identical_element_shapes),
         tensors_(N) {}
 
   // Write PersistentTensor 'value' to index 'index'.
@@ -336,6 +338,8 @@ class TensorArray : public ResourceBase {
     return !gradients_disallowed_;
   }
 
+  bool HasIdenticalElementShapes() const { return identical_element_shapes_; }
+
   // Copy the TensorShapes from another TensorArray into this one.
   // The sizes of the two TensorArrays must match and this one
   // may not have any entries filled in.  This performs a "soft copy",
@@ -395,7 +399,7 @@ class TensorArray : public ResourceBase {
 
   // Multiple writes to the same index will result in summation of the
   // values (used by backprop)
-  bool multiple_writes_aggregate_;
+  const bool multiple_writes_aggregate_;
 
   // If multiple Writes were attempted (e.g. via attribute
   // multiple_writes_aggregate), then gradients are disallowed.
@@ -403,10 +407,10 @@ class TensorArray : public ResourceBase {
 
   // After a read at an index, clear away its PersistentTensor to
   // release memory.
-  bool clear_after_read_;
+  const bool clear_after_read_;
 
   // True iff this is a gradient tensor array.
-  bool is_grad_;
+  const bool is_grad_;
 
   // The size of the TensorArray after a (legacy) unpack or split is performed.
   // -1 if there has been no unpack or split performed on the TensorArray.
@@ -415,6 +419,13 @@ class TensorArray : public ResourceBase {
   // The shape of each element in the TensorArray, may be partially known or not
   // known at all.
   PartialTensorShape element_shape_ GUARDED_BY(mu_);
+
+  // Whether all elements in the TensorArray have identical shapes.
+  // This allows certain behaviors, like dynamically checking for
+  // consistent shapes on write, and being able to fill in properly
+  // shaped zero tensors on stack -- even if the initial element_shape
+  // was not fully defined.
+  const bool identical_element_shapes_;
 
   // TensorAndState is used to keep track of the PersistentTensors
   // stored in the TensorArray, along with their shapes, and a boolean
@@ -479,6 +490,8 @@ Status TensorArray::LockedWriteOrAggregate(OpKernelContext* ctx,
         " which is incompatible with the TensorArray's inferred element "
         "shape: ",
         element_shape_.DebugString(), " (consider setting infer_shape=False).");
+  } else if (identical_element_shapes_ && !element_shape_.IsFullyDefined()) {
+    element_shape_ = PartialTensorShape(value_t->shape().dim_sizes());
   }
 
   if (t.read) {

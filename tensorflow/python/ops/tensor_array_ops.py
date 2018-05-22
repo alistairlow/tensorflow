@@ -35,6 +35,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.util import tf_should_use
+from tensorflow.python.util.tf_export import tf_export
 
 
 # _GraphTensorArray accesses many of the hidden generated ops, but is in
@@ -146,10 +147,12 @@ class _GraphTensorArray(object):
         # write into the TensorArray from a Tensor with a set device
         # will retroactively set the device value of this op.
         def create():
+          """Create the TensorArray op."""
           return gen_data_flow_ops._tensor_array_v3(
               dtype=dtype,
               size=size,
               element_shape=element_shape,
+              identical_element_shapes=infer_shape,
               dynamic_size=dynamic_size,
               clear_after_read=clear_after_read,
               tensor_array_name=tensor_array_name,
@@ -709,6 +712,7 @@ class _EagerTensorArray(object):
 # TensorArray is designed to hide an underlying implementation object
 # and as such accesses many of that object's hidden fields.
 # pylint: disable=protected-access
+@tf_export("TensorArray")
 class TensorArray(object):
   """Class wrapping dynamic-sized, per-time-step, write-once Tensor arrays.
 
