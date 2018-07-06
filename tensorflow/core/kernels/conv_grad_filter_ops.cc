@@ -32,7 +32,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_slice.h"
 #include "tensorflow/core/kernels/conv_2d.h"
 #include "tensorflow/core/kernels/fill_functor.h"
-#ifdef TENSORFLOW_USE_LIBXSMM
+#ifdef TENSORFLOW_USE_LIBXSMM_CONVOLUTIONS
 #include "tensorflow/core/kernels/xsmm_conv2d.h"
 #endif
 #include "tensorflow/core/kernels/ops_util.h"
@@ -109,27 +109,39 @@ struct LaunchConv2DBackpropFilterOp<CPUDevice, T> {
     const CPUDevice& d = ctx->eigen_device<CPUDevice>();
     functor::SpatialConvolutionBackwardFilter<CPUDevice, T>()(
         d, filter_backprop->tensor<T, 4>(), input.tensor<T, 4>(),
-        out_backprop.tensor<T, 4>(), row_stride, col_stride);
+        out_backprop.tensor<T, 4>(), row_stride, col_stride,
+        /*row_dilation=*/1, /*col_dilation=*/1);
   }
 };
 
 #ifdef TF_USE_SYCLEIGEN
 template <typename T>
 struct LaunchConv2DBackpropFilterOp<SYCLDevice, T> {
-  void operator()(OpKernelContext* ctx, bool use_cudnn, bool cudnn_use_autotune,
+  void operator()(OpKernelContext* ctx, bool use_cudnn,
+                  bool cudnn_use_autotune,
+                  const Tensor& out_backprop, const Tensor& input,
+                  int row_dilatation, int col_dilatation,
+                  int row_stride, int col_stride, const Padding& padding,
+                  Tensor* filter_backprop, TensorFormat data_format) {
+    (*this)(ctx, use_cudnn, cudnn_use_autotune, out_backprop, input,
+            row_stride, col_stride, padding, filter_backprop, data_format);
+  }
+
+  void operator()(OpKernelContext* ctx, bool use_cudnn,
+                  bool cudnn_use_autotune,
                   const Tensor& out_backprop, const Tensor& input,
                   int row_stride, int col_stride, const Padding& padding,
                   Tensor* filter_backprop, TensorFormat data_format) {
     const SYCLDevice& d = ctx->eigen_device<SYCLDevice>();
-    functor::SpatialConvolutionBackwardKernel<SYCLDevice, T>()(
+    functor::SpatialConvolutionBackwardFilter<SYCLDevice, T>()(
         d, filter_backprop->tensor<T, 4>(), input.tensor<T, 4>(),
-        out_backprop.tensor<T, 4>(), filter_backprop->dim_size(0),
-        filter_backprop->dim_size(1), row_stride, col_stride);
+        out_backprop.tensor<T, 4>(), row_stride, col_stride,
+        /*row_dilation=*/1, /*col_dilation=*/1);
   }
 };
-#endif  // TENSORFLOW_USE_SYCL
+#endif  // TF_USE_SYCLEIGEN
 
-#ifdef TENSORFLOW_USE_LIBXSMM
+#ifdef TENSORFLOW_USE_LIBXSMM_CONVOLUTIONS
 template <typename Device, class T>
 struct LaunchXsmmBackwardFilter {
   bool operator()(OpKernelContext* context, const Device& d,
@@ -270,7 +282,8 @@ class Conv2DFastBackpropFilterOp : public OpKernel {
       return;
     }
 
-#if defined TENSORFLOW_USE_LIBXSMM && defined TENSORFLOW_USE_LIBXSMM_BACKWARD
+#if defined TENSORFLOW_USE_LIBXSMM_CONVOLUTIONS && \
+    defined TENSORFLOW_USE_LIBXSMM_BACKWARD_CONVOLUTIONS
     int64 pad_top, pad_bottom;
     int64 pad_left, pad_right;
     OP_REQUIRES_OK(
@@ -398,7 +411,8 @@ class Conv2DCustomBackpropFilterOp : public OpKernel {
             dims.spatial_dims[1].input_size, dims.spatial_dims[1].filter_size,
             dims.spatial_dims[1].stride, padding_,
             &dims.spatial_dims[1].output_size, &pad_left, &pad_right));
-#if defined TENSORFLOW_USE_LIBXSMM && defined TENSORFLOW_USE_LIBXSMM_BACKWARD
+#if defined TENSORFLOW_USE_LIBXSMM_CONVOLUTIONS && \
+    defined TENSORFLOW_USE_LIBXSMM_BACKWARD_CONVOLUTIONS
     if (pad_left == pad_right && pad_top == pad_bottom) {
       if (LaunchXsmmBackwardFilter<Device, T>()(
               context, context->eigen_device<Device>(), input.tensor<T, 4>(),
@@ -545,6 +559,7 @@ class Conv2DCustomBackpropFilterOp : public OpKernel {
 
 TF_CALL_half(REGISTER_CPU_KERNELS);
 TF_CALL_float(REGISTER_CPU_KERNELS);
+TF_CALL_double(REGISTER_CPU_KERNELS);
 #undef REGISTER_CPU_KERNELS
 
 // GPU definitions.
@@ -556,7 +571,7 @@ struct ConvBackwardFilterAutoTuneGroup {
   static string name() { return "ConvBwdFilter"; }
 };
 typedef AutoTuneSingleton<ConvBackwardFilterAutoTuneGroup, ConvParameters,
-                          perftools::gputools::dnn::AlgorithmConfig>
+                          se::dnn::AlgorithmConfig>
     AutoTuneConvBwdFilter;
 
 #endif  // GOOGLE_CUDA
@@ -664,9 +679,9 @@ void LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T>::operator()(
     const Tensor& out_backprop, const Tensor& input, int row_dilation,
     int col_dilation, int row_stride, int col_stride, const Padding& padding,
     Tensor* filter_backprop, TensorFormat data_format) {
-  using perftools::gputools::dnn::AlgorithmConfig;
-  using perftools::gputools::dnn::AlgorithmDesc;
-  using perftools::gputools::dnn::ProfileResult;
+  using se::dnn::AlgorithmConfig;
+  using se::dnn::AlgorithmDesc;
+  using se::dnn::ProfileResult;
 
   std::vector<int32> dilations(4, 1);
   dilations[GetTensorDimIndex(data_format, 'H')] = row_dilation;
@@ -749,9 +764,9 @@ void LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T>::operator()(
 
     bool blas_launch_status =
         stream
-            ->ThenBlasGemm(perftools::gputools::blas::Transpose::kNoTranspose,
-                           perftools::gputools::blas::Transpose::kTranspose, n,
-                           m, k, 1.0f, a_ptr, n, b_ptr, m, 0.0f, &c_ptr, n)
+            ->ThenBlasGemm(se::blas::Transpose::kNoTranspose,
+                           se::blas::Transpose::kTranspose, n, m, k, 1.0f,
+                           a_ptr, n, b_ptr, m, 0.0f, &c_ptr, n)
             .ok();
     if (!blas_launch_status) {
       ctx->SetStatus(errors::Internal("Blas SGEMM launch failed : m=", m,
@@ -779,9 +794,9 @@ void LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T>::operator()(
 
     bool blas_launch_status =
         stream
-            ->ThenBlasGemm(perftools::gputools::blas::Transpose::kNoTranspose,
-                           perftools::gputools::blas::Transpose::kTranspose, n,
-                           m, k, 1.0f, b_ptr, n, a_ptr, m, 0.0f, &c_ptr, n)
+            ->ThenBlasGemm(se::blas::Transpose::kNoTranspose,
+                           se::blas::Transpose::kTranspose, n, m, k, 1.0f,
+                           b_ptr, n, a_ptr, m, 0.0f, &c_ptr, n)
             .ok();
     if (!blas_launch_status) {
       ctx->SetStatus(errors::Internal("Blas SGEMM launch failed : m=", m,
@@ -815,24 +830,24 @@ void LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T>::operator()(
   CHECK(padding_rows >= 0 && padding_cols >= 0)
       << "Negative row or col paddings: (" << padding_rows << ", "
       << padding_cols << ")";
-  perftools::gputools::dnn::BatchDescriptor input_desc;
+  se::dnn::BatchDescriptor input_desc;
   input_desc.set_count(dims.batch_size)
       .set_height(GetTensorDim(compatible_input, data_format, 'H'))
       .set_width(GetTensorDim(compatible_input, data_format, 'W'))
       .set_feature_map_count(dims.in_depth)
-      .set_layout(perftools::gputools::dnn::DataLayout::kBatchDepthYX);
-  perftools::gputools::dnn::BatchDescriptor output_desc;
+      .set_layout(se::dnn::DataLayout::kBatchDepthYX);
+  se::dnn::BatchDescriptor output_desc;
   output_desc.set_count(dims.batch_size)
       .set_height(dims.spatial_dims[0].output_size)
       .set_width(dims.spatial_dims[1].output_size)
       .set_feature_map_count(dims.out_depth)
-      .set_layout(perftools::gputools::dnn::DataLayout::kBatchDepthYX);
-  perftools::gputools::dnn::FilterDescriptor filter_desc;
+      .set_layout(se::dnn::DataLayout::kBatchDepthYX);
+  se::dnn::FilterDescriptor filter_desc;
   filter_desc.set_input_filter_height(dims.spatial_dims[0].filter_size)
       .set_input_filter_width(dims.spatial_dims[1].filter_size)
       .set_input_feature_map_count(dims.in_depth)
       .set_output_feature_map_count(dims.out_depth);
-  perftools::gputools::dnn::ConvolutionDescriptor conv_desc;
+  se::dnn::ConvolutionDescriptor conv_desc;
   conv_desc.set_vertical_dilation_rate(dims.spatial_dims[0].dilation)
       .set_horizontal_dilation_rate(dims.spatial_dims[1].dilation)
       .set_vertical_filter_stride(dims.spatial_dims[0].stride)
@@ -940,7 +955,8 @@ void LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T>::operator()(
                                 conv_parameters, &algorithm_config)) {
     std::vector<AlgorithmDesc> algorithms;
     CHECK(stream->parent()->GetConvolveBackwardFilterAlgorithms(
-        conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(), &algorithms));
+        conv_parameters.ShouldIncludeWinogradNonfusedAlgo<T>(stream->parent()),
+        &algorithms));
     ProfileResult best_result;
     ProfileResult best_result_no_scratch;
     for (auto profile_algorithm : algorithms) {
@@ -1046,11 +1062,17 @@ namespace functor {
       typename TTypes<T, 4, int>::Tensor out, TensorFormat data_format); \
   extern template struct PadInput<GPUDevice, T, int, 4>;
 
+DECLARE_GPU_SPEC(double);
 DECLARE_GPU_SPEC(float);
 DECLARE_GPU_SPEC(Eigen::half);
 #undef DECLARE_GPU_SPEC
 }  // namespace functor
 
+REGISTER_KERNEL_BUILDER(Name("Conv2DBackpropFilter")
+                            .Device(DEVICE_GPU)
+                            .TypeConstraint<double>("T")
+                            .HostMemory("filter_sizes"),
+                        Conv2DSlowBackpropFilterOp<GPUDevice, double>);
 REGISTER_KERNEL_BUILDER(Name("Conv2DBackpropFilter")
                             .Device(DEVICE_GPU)
                             .TypeConstraint<float>("T")
@@ -1071,6 +1093,7 @@ REGISTER_KERNEL_BUILDER(Name("Conv2DBackpropFilter")
                               .HostMemory("filter_sizes"), \
                           Conv2DSlowBackpropFilterOp<SYCLDevice, T>);
 
+//TODO(codeplay): Enable double and half later
 //TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNELS)
 TF_CALL_float(REGISTER_SYCL_KERNELS)
 #undef REGISTER_SYCL_KERNELS

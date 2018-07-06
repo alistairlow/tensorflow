@@ -20,4 +20,10 @@ REGISTER2(BinaryOp, CPU, "Atan2", functor::atan2, float, double);
 #if GOOGLE_CUDA
 REGISTER2(BinaryOp, GPU, "Atan2", functor::atan2, float, double);
 #endif
+
+#ifdef TENSORFLOW_USE_SYCL
+#define REGISTER_SYCL(type) REGISTER(BinaryOp, SYCL, "Atan2", functor::atan2, type)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#undef REGISTER_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

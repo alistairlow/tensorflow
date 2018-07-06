@@ -59,30 +59,28 @@ class ConvolutionThunk : public Thunk {
                    const Shape& input_shape, const Shape& filter_shape,
                    const Shape& output_shape, const Window& window,
                    const ConvolutionDimensionNumbers& dim_nums, int64 algorithm,
-                   const HloInstruction* hlo);
+                   bool tensor_ops_enabled, const HloInstruction* hlo);
 
   ConvolutionThunk(const ConvolutionThunk&) = delete;
   ConvolutionThunk& operator=(const ConvolutionThunk&) = delete;
 
   // Does the convolution for the thunk on "stream".
   Status ExecuteOnStream(const BufferAllocations& buffer_allocations,
-                         perftools::gputools::Stream* stream) override;
+                         se::Stream* stream) override;
 
  private:
   class ScratchAllocator;
 
-  Status Convolve(
-      const perftools::gputools::dnn::BatchDescriptor& input_descriptor,
-      perftools::gputools::DeviceMemory<float> input_data,
-      const perftools::gputools::dnn::FilterDescriptor& filter_descriptor,
-      perftools::gputools::DeviceMemory<float> filter_data,
-      const perftools::gputools::dnn::BatchDescriptor& output_descriptor,
-      perftools::gputools::DeviceMemory<float> output_data,
-      const perftools::gputools::dnn::ConvolutionDescriptor&
-          convolution_descriptor,
-      const perftools::gputools::dnn::AlgorithmConfig& algorithm_config,
-      perftools::gputools::Stream* stream, ScratchAllocator* scratch_allocator,
-      perftools::gputools::dnn::ProfileResult* profile_result);
+  Status Convolve(const se::dnn::BatchDescriptor& input_descriptor,
+                  se::DeviceMemory<float> input_data,
+                  const se::dnn::FilterDescriptor& filter_descriptor,
+                  se::DeviceMemory<float> filter_data,
+                  const se::dnn::BatchDescriptor& output_descriptor,
+                  se::DeviceMemory<float> output_data,
+                  const se::dnn::ConvolutionDescriptor& convolution_descriptor,
+                  const se::dnn::AlgorithmConfig& algorithm_config,
+                  se::Stream* stream, ScratchAllocator* scratch_allocator,
+                  se::dnn::ProfileResult* profile_result);
 
   const CudnnConvKind convolution_kind_;
 
@@ -99,6 +97,7 @@ class ConvolutionThunk : public Thunk {
   const Window window_;
   const ConvolutionDimensionNumbers dim_nums_;
   int64 algorithm_;
+  bool tensor_ops_enabled_;
 };
 
 }  // namespace gpu

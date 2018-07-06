@@ -234,6 +234,7 @@ TF_CALL_complex128(HANDLE_TYPE_NAME_GPU);
 #endif  // GOOGLE_CUDA
 
 #ifdef TENSORFLOW_USE_SYCL
+TF_CALL_bool(HANDLE_TYPE_NAME_SYCL);
 TF_CALL_SYCL_NUMBER_TYPES(HANDLE_TYPE_NAME_SYCL);
 TF_CALL_int16(HANDLE_TYPE_NAME_SYCL);
 TF_CALL_int32(HANDLE_TYPE_NAME_SYCL);
@@ -580,7 +581,7 @@ TF_CALL_complex128(REGISTER_GPU)
 #endif  // GOOGLE_CUDA
 
 #ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL(type)                                        \
+#define REGISTER_SYCL_TILE(type)                                   \
   REGISTER_KERNEL_BUILDER(Name("Tile")                             \
                               .Device(DEVICE_SYCL)                 \
                               .TypeConstraint<type>("T")           \
@@ -592,7 +593,9 @@ TF_CALL_complex128(REGISTER_GPU)
                               .TypeConstraint<type>("T")           \
                               .TypeConstraint<int64>("Tmultiples") \
                               .HostMemory("multiples"),            \
-                          TileOp<SYCLDevice, int64>);              \
+                          TileOp<SYCLDevice, int64>);
+
+#define REGISTER_SYCL_TILE_GRAD(type)                              \
   REGISTER_KERNEL_BUILDER(Name("TileGrad")                         \
                               .Device(DEVICE_SYCL)                 \
                               .TypeConstraint<type>("T")           \
@@ -606,8 +609,17 @@ TF_CALL_complex128(REGISTER_GPU)
                               .HostMemory("multiples"),            \
                           TileGradientOp<SYCLDevice, int64>);
 
-    TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#define REGISTER_SYCL(type) \
+  REGISTER_SYCL_TILE(type); \
+  REGISTER_SYCL_TILE_GRAD(type);
+
+TF_CALL_bool(REGISTER_SYCL_TILE);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+TF_CALL_int16(REGISTER_SYCL);
+TF_CALL_int32(REGISTER_SYCL);
 #undef REGISTER_SYCL
+#undef REGISTER_SYCL_TILE
+#undef REGISTER_SYCL_TILE_GRAD
 #endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

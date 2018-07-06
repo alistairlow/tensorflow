@@ -374,12 +374,29 @@ REGISTER_GPU_HOST_KERNEL(bool);
                               .Device(DEVICE_SYCL)        \
                               .HostMemory("handle")       \
                               .TypeConstraint<type>("T"), \
+                          StackPushOp<SYCLDevice>);       \
+  REGISTER_KERNEL_BUILDER(Name("StackPushV2")             \
+                              .Device(DEVICE_SYCL)        \
+                              .HostMemory("handle")       \
+                              .TypeConstraint<type>("T"), \
                           StackPushOp<SYCLDevice>);
 
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNEL);
+TF_CALL_int8(REGISTER_SYCL_KERNEL);
+TF_CALL_uint8(REGISTER_SYCL_KERNEL);
+TF_CALL_int16(REGISTER_SYCL_KERNEL);
+TF_CALL_uint16(REGISTER_SYCL_KERNEL);
+TF_CALL_int64(REGISTER_SYCL_KERNEL);
 
 #define REGISTER_SYCL_HOST_KERNEL(type)                   \
   REGISTER_KERNEL_BUILDER(Name("StackPush")               \
+                              .Device(DEVICE_SYCL)        \
+                              .HostMemory("handle")       \
+                              .HostMemory("elem")         \
+                              .HostMemory("output")       \
+                              .TypeConstraint<type>("T"), \
+                          StackPushOp<SYCLDevice>)        \
+  REGISTER_KERNEL_BUILDER(Name("StackPushV2")             \
                               .Device(DEVICE_SYCL)        \
                               .HostMemory("handle")       \
                               .HostMemory("elem")         \
@@ -481,9 +498,19 @@ REGISTER_GPU_HOST_KERNEL(bool);
                               .Device(DEVICE_SYCL)                \
                               .HostMemory("handle")               \
                               .TypeConstraint<type>("elem_type"), \
+                          StackPopOp)                             \
+  REGISTER_KERNEL_BUILDER(Name("StackPopV2")                      \
+                              .Device(DEVICE_SYCL)                \
+                              .HostMemory("handle")               \
+                              .TypeConstraint<type>("elem_type"), \
                           StackPopOp)
 
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNEL);
+TF_CALL_int8(REGISTER_SYCL_KERNEL);
+TF_CALL_uint8(REGISTER_SYCL_KERNEL);
+TF_CALL_int16(REGISTER_SYCL_KERNEL);
+TF_CALL_uint16(REGISTER_SYCL_KERNEL);
+TF_CALL_int64(REGISTER_SYCL_KERNEL);
 
 #define REGISTER_SYCL_HOST_KERNEL(type)                           \
   REGISTER_KERNEL_BUILDER(Name("StackPop")                        \
@@ -491,9 +518,15 @@ TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNEL);
                               .HostMemory("handle")               \
                               .HostMemory("elem")                 \
                               .TypeConstraint<type>("elem_type"), \
+                          StackPopOp)                             \
+  REGISTER_KERNEL_BUILDER(Name("StackPopV2")                      \
+                              .Device(DEVICE_SYCL)                \
+                              .HostMemory("handle")               \
+                              .HostMemory("elem")                 \
+                              .TypeConstraint<type>("elem_type"), \
                           StackPopOp)
 
-REGISTER_SYCL_HOST_KERNEL(int32);
+REGISTER_SYCL_HOST_KERNEL(int32)
 REGISTER_SYCL_HOST_KERNEL(bool);
 
 #undef REGISTER_SYCL_KERNEL

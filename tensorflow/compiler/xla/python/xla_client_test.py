@@ -86,7 +86,8 @@ class ComputationsWithConstantsTest(LocalComputationTest):
 
   def testConstantScalarSumF32(self):
     c = self._NewComputation()
-    c.Add(c.ConstantF32Scalar(1.11), c.ConstantF32Scalar(3.14))
+    root = c.Add(c.ConstantF32Scalar(1.11), c.ConstantF32Scalar(3.14))
+    self.assertEqual(c.GetShape(root), c.GetReturnValueShape())
     self._ExecuteAndCompareClose(c, expected=4.25)
 
   def testConstantScalarSumF64(self):
@@ -318,7 +319,7 @@ class LocalBufferTest(LocalComputationTest):
 
   def _Execute(self, c, arguments):
     compiled_c = c.Build().CompileWithExampleArguments(arguments)
-    arg_buffers = [xla_client.LocalBuffer.from_py(arg) for arg in arguments]
+    arg_buffers = [xla_client.LocalBuffer.from_pyval(arg) for arg in arguments]
     result_buffer = compiled_c.ExecuteWithLocalBuffers(arg_buffers)
     return result_buffer.to_py()
 
@@ -349,7 +350,7 @@ class LocalBufferTest(LocalComputationTest):
     c.Add(c.ParameterFromNumpy(NumpyArrayF32(0.)), c.ConstantF32Scalar(3.14))
     arg = NumpyArrayF32(1.11)
     compiled_c = c.Build().CompileWithExampleArguments([arg])
-    arg_buffer = xla_client.LocalBuffer.from_py(arg)
+    arg_buffer = xla_client.LocalBuffer.from_pyval(arg)
     arg_buffer.delete()
     with self.assertRaises(ValueError):
       compiled_c.ExecuteWithLocalBuffers([arg_buffer])
@@ -761,6 +762,23 @@ class SingleOpTest(LocalComputationTest):
         [3, 2])
     self._ExecuteAndCompareExact(c, expected=[[4, 5], [7, 8]])
 
+  def testSliceInDim(self):
+    c = self._NewComputation()
+    c.SliceInDim(
+        c.Constant(NumpyArrayS32([[1, 2, 3], [4, 5, 6], [7, 8, 9]])),
+        start_index=1,
+        limit_index=2,
+        stride=1,
+        dimno=1)
+    self._ExecuteAndCompareExact(c, expected=[[2], [5], [8]])
+    c.SliceInDim(
+        c.Constant(NumpyArrayS32([[1, 2, 3], [4, 5, 6], [7, 8, 9]])),
+        start_index=0,
+        limit_index=3,
+        stride=2,
+        dimno=0)
+    self._ExecuteAndCompareExact(c, expected=[[1, 2, 3], [7, 8, 9]])
+
   def testDynamicSlice(self):
     c = self._NewComputation()
     c.DynamicSlice(
@@ -837,6 +855,17 @@ class SingleOpTest(LocalComputationTest):
     self.assertTrue(np.all(lo <= result))
     self.assertTrue(np.all(result < hi))
 
+  def testIsConstant(self):
+    c = self._NewComputation()
+    a = c.ConstantS32Scalar(3)
+    b = c.ConstantS32Scalar(1)
+    x = c.ParameterFromNumpy(NumpyArrayS32(0))
+    const_expr = c.Sub(b, a)
+    non_const_expr = c.Mul(const_expr, x)
+    self.assertTrue(c.IsConstant(const_expr))
+    self.assertFalse(c.IsConstant(non_const_expr))
+    # self.assertTrue(c.IsConstant(c.Sub(c.Add(x, a), x)))  # TODO(b/77245564)
+
 
 class EmbeddedComputationsTest(LocalComputationTest):
   """Tests for XLA graphs with embedded computations (such as maps)."""
@@ -879,6 +908,13 @@ class EmbeddedComputationsTest(LocalComputationTest):
     """Computation (f32) -> f32 that multiplies its parameter by 2."""
     c = self._NewComputation("mul_f32_by2")
     c.Mul(c.ParameterFromNumpy(NumpyArrayF32(0)), c.ConstantF32Scalar(2.0))
+    return c.Build()
+
+  def _CreateMulF32ByParamComputation(self):
+    """Computation (f32) -> f32 that multiplies one parameter by the other."""
+    c = self._NewComputation("mul_f32_by_param")
+    c.Mul(c.ParameterFromNumpy(NumpyArrayF32(0)),
+          c.ParameterFromNumpy(NumpyArrayF32(0)))
     return c.Build()
 
   def _CreateMulF64By2Computation(self):
@@ -1021,6 +1057,14 @@ class EmbeddedComputationsTest(LocalComputationTest):
           self._CreateBinaryDivF64Computation(), [0])
     self._ExecuteAndCompareClose(c, expected=[0.2, 0.4, 0.75, 1.0])
 
+  def DISABLED_testMapWithStaticOperands(self):
+    c = self._NewComputation()
+    factor = c.ConstantF32Scalar(3.0)
+    c.Map([c.Constant(NumpyArrayF32([1.0, 2.0, 3.0, 4.0]))],
+          self._CreateMulF32ByParamComputation(), [0],
+          static_operands=[factor])
+    self._ExecuteAndCompareClose(c, expected=[3.0, 6.0, 9.0, 12.0])
+
   def testSelectAndScatterF32(self):
     c = self._NewComputation()
     c.SelectAndScatter(c.Constant(NumpyArrayF32([[1., 2., 6.], [4., 5., 3.]])),
@@ -1116,7 +1160,6 @@ class EmbeddedComputationsTest(LocalComputationTest):
       self._ExecuteAndCompareClose(
           c, expected=np.sum(input_array, axis=tuple(dims)))
 
-    _ReduceAndTest(0)
     _ReduceAndTest(0)
     _ReduceAndTest(0, 1)
     _ReduceAndTest(0, 2)
@@ -1244,7 +1287,7 @@ class EmbeddedComputationsTest(LocalComputationTest):
   def testInfeedS32Values(self):
     to_infeed = NumpyArrayS32([1, 2, 3, 4])
     c = self._NewComputation()
-    c.Infeed(xla_client.Shape.from_numpy(to_infeed[0]))
+    c.Infeed(xla_client.Shape.from_pyval(to_infeed[0]))
     compiled_c = c.Build().CompileWithExampleArguments()
     for item in to_infeed:
       xla_client.transfer_to_infeed(item)
@@ -1256,7 +1299,7 @@ class EmbeddedComputationsTest(LocalComputationTest):
   def testInfeedThenOutfeedS32(self):
     to_round_trip = NumpyArrayS32([1, 2, 3, 4])
     c = self._NewComputation()
-    x = c.Infeed(xla_client.Shape.from_numpy(to_round_trip[0]))
+    x = c.Infeed(xla_client.Shape.from_pyval(to_round_trip[0]))
     c.Outfeed(x)
 
     compiled_c = c.Build().CompileWithExampleArguments()
@@ -1266,7 +1309,7 @@ class EmbeddedComputationsTest(LocalComputationTest):
       execution.start()
       xla_client.transfer_to_infeed(want)
       got = xla_client.transfer_from_outfeed(
-          xla_client.Shape.from_numpy(to_round_trip[0]))
+          xla_client.Shape.from_pyval(to_round_trip[0]))
       execution.join()
       self.assertEqual(want, got)
 

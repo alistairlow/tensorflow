@@ -16,14 +16,14 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(BinaryOp, CPU, "Div", functor::div, float, Eigen::half, double,
-          complex64, complex128);
+REGISTER6(BinaryOp, CPU, "Div", functor::div, float, Eigen::half, double,
+          bfloat16, complex64, complex128);
 REGISTER5(BinaryOp, CPU, "Div", functor::safe_div, uint8, uint16, int16, int32,
           int64);
 REGISTER5(BinaryOp, CPU, "TruncateDiv", functor::safe_div, uint8, uint16, int16,
           int32, int64);
-REGISTER5(BinaryOp, CPU, "RealDiv", functor::div, float, Eigen::half, double,
-          complex64, complex128);
+REGISTER6(BinaryOp, CPU, "RealDiv", functor::div, float, Eigen::half, double,
+          bfloat16, complex64, complex128);
 #if GOOGLE_CUDA
 REGISTER9(BinaryOp, GPU, "Div", functor::div, float, Eigen::half, double, uint8,
           uint16, int16, int64, complex64, complex128);
@@ -45,11 +45,17 @@ REGISTER_KERNEL_BUILDER(Name("Div")
 #endif
 
 #ifdef TENSORFLOW_USE_SYCL
+REGISTER4(BinaryOp, SYCL, "Div", functor::div, uint8, uint16, int16,
+          int64);
+REGISTER5(BinaryOp, SYCL, "TruncateDiv", functor::div, uint8, uint16, int16,
+          int32, int64);
 #define REGISTER_SYCL(type)                           \
   REGISTER(BinaryOp, SYCL, "Div", functor::div, type) \
   REGISTER(BinaryOp, SYCL, "RealDiv", functor::div, type)
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 #undef REGISTER_SYCL
+
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(Name("Div")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")

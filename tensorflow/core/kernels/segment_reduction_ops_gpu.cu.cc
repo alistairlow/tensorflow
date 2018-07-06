@@ -17,10 +17,13 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
+// We need to include cuda_kernel_helper.h before segment_reduction_ops.h
+// See comment in segment_reduction_ops.h for more details.
+#include "tensorflow/core/util/cuda_kernel_helper.h"
+
 #include "tensorflow/core/kernels/segment_reduction_ops.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/util/cuda_device_functions.h"
-#include "tensorflow/core/util/cuda_kernel_helper.h"
 
 
 namespace tensorflow {
@@ -171,7 +174,7 @@ struct UnsortedSegmentFunctor<GPUDevice, T, Index, InitialValueF, ReductionF> {
   void operator()(OpKernelContext* ctx, const Index num_segments,
                   const TensorShape& segment_ids_shape,
                   typename TTypes<Index>::ConstFlat segment_ids,
-                  const Index data_size, const T* data,
+                  typename TTypes<T>::ConstFlat data_flat,
                   typename TTypes<T, 2>::Tensor output) {
     if (output.size() == 0) {
       return;
@@ -181,6 +184,8 @@ struct UnsortedSegmentFunctor<GPUDevice, T, Index, InitialValueF, ReductionF> {
     CudaLaunchConfig config = GetCudaLaunchConfig(output.size(), d);
     SetToValue<<<config.block_count, config.thread_per_block, 0, d.stream()>>>(
         output.size(), output.data(), InitialValueF()());
+    const Index data_size = data_flat.size();
+    const T* data = data_flat.data();
     if (data_size == 0 || segment_ids_shape.num_elements() == 0) {
       return;
     }

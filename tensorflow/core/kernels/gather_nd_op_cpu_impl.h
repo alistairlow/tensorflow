@@ -35,6 +35,9 @@ limitations under the License.
 namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
+#ifdef TENSORFLOW_USE_SYCL
+typedef Eigen::SyclDevice SYCLDevice;
+#endif  // TENSORFLOW_USE_SYCL
 
 namespace generator {
 
@@ -124,19 +127,119 @@ struct GatherNdSlice<CPUDevice, T, Index, IXDIM> {
   }
 };
 
-#define REGISTER_GATHER_ND_FULL(T, Index)                                     \
-  template Index GatherNdSlice<CPUDevice, T, Index, CPU_PROVIDED_IXDIM>::     \
-  operator()(const CPUDevice& d, const Index slice_size,                      \
+#define REGISTER_GATHER_ND_FULL(dev, T, Index)                                \
+  template Index GatherNdSlice<dev##Device, T, Index, CPU_PROVIDED_IXDIM>::   \
+  operator()(const dev##Device& d, const Index slice_size,                    \
              typename TTypes<int32>::Scalar Tscratch,                         \
              typename TTypes<T, CPU_PROVIDED_IXDIM + 1>::ConstTensor Tparams, \
              typename TTypes<Index>::ConstMatrix Tindices,                    \
              typename TTypes<T>::Matrix Tout);
 
-#define REGISTER_GATHER_ND_CPU(type)    \
-  REGISTER_GATHER_ND_FULL(type, int32); \
-  REGISTER_GATHER_ND_FULL(type, int64)
+#define REGISTER_GATHER_ND_ALL_INDICES(dev, type) \
+  REGISTER_GATHER_ND_FULL(dev, type, int32);      \
+  REGISTER_GATHER_ND_FULL(dev, type, int64)
+
+#define REGISTER_GATHER_ND_CPU(type) REGISTER_GATHER_ND_ALL_INDICES(CPU, type)
 
 TF_CALL_ALL_TYPES(REGISTER_GATHER_ND_CPU);
+
+#undef REGISTER_GATHER_ND_CPU
+
+#ifdef TENSORFLOW_USE_SYCL
+
+template <typename T, typename Index, int IXDIM>
+struct GatherNdSlice<SYCLDevice, T, Index, IXDIM> {
+ private:
+  bool FlattenIdx(const typename TTypes<Index>::ConstMatrix& Tindices,
+                  const Eigen::array<Eigen::DenseIndex, IXDIM + 1>& params_dims,
+                  Eigen::DenseIndex loc, Eigen::DenseIndex& flat_idx,
+                  Index& error_loc) {
+    flat_idx = 0;
+    bool out_of_bounds = false;
+    for (int i = 0; i < IXDIM; ++i) {
+      const Index ix_i = internal::SubtleMustCopy(Tindices(loc, i));
+      flat_idx = (flat_idx + ix_i) * params_dims[i + 1];
+      out_of_bounds |= !FastBoundsCheck(ix_i, params_dims[i]);
+    }
+    if (TF_PREDICT_FALSE(out_of_bounds))
+      error_loc = loc;
+    return out_of_bounds;
+  }
+
+  void MemCpyOrSet(const SYCLDevice& d, Index size, T* dst_ptr,
+                   const T* src_ptr, Eigen::DenseIndex out_dim1,
+                   bool out_of_bounds, Eigen::DenseIndex loc,
+                   Eigen::DenseIndex act_flat_idx,
+                   Eigen::DenseIndex nb_continuous) {
+    dst_ptr += loc * out_dim1;
+    size *= nb_continuous * sizeof(T);
+    if (out_of_bounds)
+      d.memset(dst_ptr, T(0), size);
+    else
+      d.memcpy(dst_ptr, src_ptr + act_flat_idx, size);
+  }
+
+ public:
+  Index operator()(const SYCLDevice& d, const Index slice_size,
+                   typename TTypes<int32>::Scalar,
+                   typename TTypes<T, IXDIM + 1>::ConstTensor Tparams,
+                   typename TTypes<Index>::ConstMatrix Tindices,
+                   typename TTypes<T>::Matrix Tout) {
+    // Run as litte memcpy as possible by concatenating the calls with
+    // adjacent indices
+    const Eigen::DenseIndex batch_size = Tindices.dimension(0);
+    Eigen::DenseIndex out_dim1 = Tout.dimension(1);
+    const auto& params_dims = Tparams.dimensions();
+
+    auto src_ptr = static_cast<const T*>(Tparams.data());
+    auto dst_ptr = static_cast<T*>(Tout.data());
+
+    Index error_loc(-1);
+    Eigen::DenseIndex act_loc(0);
+    Eigen::DenseIndex next_loc(0);
+    Eigen::DenseIndex nb_continuous(1);
+    Eigen::DenseIndex act_flat_idx;
+    Eigen::DenseIndex next_flat_idx;
+    bool act_out_of_bounds = FlattenIdx(Tindices, params_dims, next_loc++,
+                                        act_flat_idx, error_loc);
+    bool next_out_of_bounds;
+    while (next_loc < batch_size) {
+      // Find next in bounds flatten idx continuous to previous flat_idx
+      do {
+        next_out_of_bounds = FlattenIdx(Tindices, params_dims, next_loc++,
+                                        next_flat_idx, error_loc);
+        if (act_out_of_bounds != next_out_of_bounds ||
+            next_flat_idx != act_flat_idx + slice_size * nb_continuous)
+          break;
+        ++nb_continuous;
+      } while (next_loc < batch_size);
+      MemCpyOrSet(d, slice_size, dst_ptr, src_ptr, out_dim1, act_out_of_bounds,
+                  act_loc, act_flat_idx, nb_continuous);
+      act_loc += nb_continuous;
+      act_flat_idx = next_flat_idx;
+      act_out_of_bounds = next_out_of_bounds;
+      nb_continuous = 1;
+    }
+    if (act_loc < batch_size) {
+      MemCpyOrSet(d, slice_size, dst_ptr, src_ptr, out_dim1, act_out_of_bounds,
+                  act_loc, act_flat_idx, nb_continuous);
+    }
+    return error_loc;
+  }
+};
+
+#define REGISTER_GATHER_ND_SYCL(type) \
+  REGISTER_GATHER_ND_ALL_INDICES(SYCL, type)
+
+TF_CALL_INTEGRAL_TYPES(REGISTER_GATHER_ND_SYCL);
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_GATHER_ND_SYCL);
+
+#undef REGISTER_GATHER_ND_SYCL
+
+#endif  // TENSORFLOW_USE_SYCL
+
+#undef REGISTER_GATHER_ND_FULL
+#undef REGISTER_GATHER_ND_ALL_INDICES
 
 }  // namespace functor
 

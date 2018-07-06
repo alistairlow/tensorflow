@@ -43,6 +43,8 @@ REGISTER(BinaryOp, SYCL, "SquaredDifference", functor::squared_difference,
             type)
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 #undef REGISTER_SYCL
+
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(
     Name("SquaredDifference")
         .Device(DEVICE_SYCL)

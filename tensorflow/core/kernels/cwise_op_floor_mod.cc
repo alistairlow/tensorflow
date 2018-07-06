@@ -33,6 +33,13 @@ REGISTER_KERNEL_BUILDER(Name("FloorMod")
 #endif
 
 #ifdef TENSORFLOW_USE_SYCL
+REGISTER(BinaryOp, SYCL, "FloorMod", functor::floor_mod, int64);
+#define REGISTER_SYCL(type) \
+  REGISTER(BinaryOp, SYCL, "FloorMod", functor::floor_fmod, type)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#undef REGISTER_SYCL
+
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(Name("FloorMod")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")

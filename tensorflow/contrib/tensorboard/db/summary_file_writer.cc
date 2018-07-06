@@ -47,9 +47,9 @@ class SummaryFileWriter : public SummaryWriterInterface {
     mutex_lock ml(mu_);
     events_writer_ =
         tensorflow::MakeUnique<EventsWriter>(io::JoinPath(logdir, "events"));
-    if (!events_writer_->InitWithSuffix(filename_suffix)) {
-      return errors::Unknown("Could not initialize events writer.");
-    }
+    TF_RETURN_WITH_CONTEXT_IF_ERROR(
+        events_writer_->InitWithSuffix(filename_suffix),
+        "Could not initialize events writer.");
     last_flush_ = env_->NowMicros();
     is_initialized_ = true;
     return Status::OK();
@@ -132,7 +132,7 @@ class SummaryFileWriter : public SummaryWriterInterface {
   Status WriteEvent(std::unique_ptr<Event> event) override {
     mutex_lock ml(mu_);
     queue_.emplace_back(std::move(event));
-    if (queue_.size() >= max_queue_ ||
+    if (queue_.size() > max_queue_ ||
         env_->NowMicros() - last_flush_ > 1000 * flush_millis_) {
       return InternalFlush();
     }
@@ -151,9 +151,8 @@ class SummaryFileWriter : public SummaryWriterInterface {
       events_writer_->WriteEvent(*e);
     }
     queue_.clear();
-    if (!events_writer_->Flush()) {
-      return errors::InvalidArgument("Could not flush events file.");
-    }
+    TF_RETURN_WITH_CONTEXT_IF_ERROR(events_writer_->Flush(),
+                                    "Could not flush events file.");
     last_flush_ = env_->NowMicros();
     return Status::OK();
   }

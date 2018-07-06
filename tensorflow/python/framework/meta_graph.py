@@ -439,9 +439,10 @@ def add_collection_def(meta_graph_def, key, graph=None,
       else:
         getattr(col_def, kind).value.extend([x for x in collection_list])
   except Exception as e:  # pylint: disable=broad-except
-    logging.warning("Error encountered when serializing %s.\n"
+    logging.warning("Issue encountered when serializing %s.\n"
                     "Type is unsupported, or the types of the items don't "
-                    "match field type in CollectionDef.\n%s", key, str(e))
+                    "match field type in CollectionDef. Note this is a warning "
+                    "and probably safe to ignore.\n%s", key, str(e))
     if key in meta_graph_def.collection_def:
       del meta_graph_def.collection_def[key]
     return
@@ -695,7 +696,7 @@ def import_scoped_meta_graph(meta_graph_or_file,
   Raises:
     ValueError: If the graph_def contains unbound inputs.
   """
-  if context.in_eager_mode():
+  if context.executing_eagerly():
     raise ValueError("Exporting/importing meta graphs is not supported when "
                      "eager execution is enabled.")
   if isinstance(meta_graph_or_file, meta_graph_pb2.MetaGraphDef):
@@ -737,10 +738,13 @@ def import_scoped_meta_graph(meta_graph_or_file,
         import_scope or "", mark_as_used=False)
 
     importer.import_graph_def(
-        input_graph_def, name=(import_scope or ""), input_map=input_map,
+        input_graph_def,
+        name=(import_scope or scope_to_prepend_to_names),
+        input_map=input_map,
         producer_op_list=producer_op_list)
 
     # Restores all the other collections.
+    variable_objects = {}
     for key, col_def in sorted(meta_graph_def.collection_def.items()):
       # Don't add unbound_inputs to the new graph.
       if key == unbound_inputs_col_name:
@@ -756,11 +760,23 @@ def import_scoped_meta_graph(meta_graph_or_file,
       from_proto = ops.get_from_proto_function(key)
       if from_proto and kind == "bytes_list":
         proto_type = ops.get_collection_proto_type(key)
-        for value in col_def.bytes_list.value:
-          proto = proto_type()
-          proto.ParseFromString(value)
-          graph.add_to_collection(
-              key, from_proto(proto, import_scope=scope_to_prepend_to_names))
+        if key in ops.GraphKeys._VARIABLE_COLLECTIONS:  # pylint: disable=protected-access
+          for value in col_def.bytes_list.value:
+            variable = variable_objects.get(value, None)
+            if variable is None:
+              proto = proto_type()
+              proto.ParseFromString(value)
+              variable = from_proto(
+                  proto, import_scope=scope_to_prepend_to_names)
+              variable_objects[value] = variable
+            graph.add_to_collection(key, variable)
+        else:
+          for value in col_def.bytes_list.value:
+            proto = proto_type()
+            proto.ParseFromString(value)
+            graph.add_to_collection(
+                key, from_proto(
+                    proto, import_scope=scope_to_prepend_to_names))
       else:
         field = getattr(col_def, kind)
         if key in _COMPAT_COLLECTION_LIST:
@@ -843,7 +859,7 @@ def export_scoped_meta_graph(filename=None,
   Raises:
     ValueError: When the `GraphDef` is larger than 2GB.
   """
-  if context.in_eager_mode():
+  if context.executing_eagerly():
     raise ValueError("Exporting/importing meta graphs is not supported when "
                      "Eager Execution is enabled.")
   graph = graph or ops.get_default_graph()

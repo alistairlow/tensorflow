@@ -33,6 +33,7 @@ REGISTER_KERNEL_BUILDER(Name("Greater")
                             .TypeConstraint<int32>("T"),
                         BinaryOp<CPUDevice, functor::greater<int32>>);
 #endif
+
 #ifdef TENSORFLOW_USE_SYCL
 #define REGISTER_SYCL(type) \
   REGISTER(BinaryOp, SYCL, "Greater", functor::greater, type)
@@ -41,6 +42,7 @@ TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 REGISTER4(BinaryOp, SYCL, "Greater", functor::greater, int64, uint8, int8,
           int16);
 
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(Name("Greater")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")

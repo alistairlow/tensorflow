@@ -32,6 +32,9 @@ namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
+#ifdef TENSORFLOW_USE_SYCL
+typedef Eigen::SyclDevice SYCLDevice;
+#endif  // TENSORFLOW_USE_SYCL
 
 // Simulate quantization precision loss in a float tensor by:
 // 1. Quantize the tensor to fixed point numbers, which should match the target
@@ -57,13 +60,23 @@ class QuantizeAndDequantizeV2Op : public OpKernel {
     Tensor* output = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, input.shape(), &output));
 
+    auto device = ctx->eigen_device<Device>();
     Tensor input_min_tensor;
     Tensor input_max_tensor;
     if (range_given_) {
       input_min_tensor = ctx->input(1);
       input_max_tensor = ctx->input(2);
-      auto min_val = input_min_tensor.scalar<T>()();
-      auto max_val = input_max_tensor.scalar<T>()();
+      auto input_min = input_min_tensor.scalar<T>();
+      auto input_max = input_max_tensor.scalar<T>();
+      T min_val;
+      T max_val;
+#ifdef TENSORFLOW_USE_SYCL
+      device.memcpyDeviceToHost(&min_val, input_min.data(), sizeof(T));
+      device.memcpyDeviceToHost(&max_val, input_max.data(), sizeof(T));
+#else
+      min_val = input_min();
+      max_val = input_max();
+#endif // TENSORFLOW_USE_SYCL
       OP_REQUIRES(ctx, min_val <= max_val,
                   errors::InvalidArgument("Invalid range: input_min ", min_val,
                                           " > input_max ", max_val));
@@ -75,7 +88,7 @@ class QuantizeAndDequantizeV2Op : public OpKernel {
     }
 
     functor::QuantizeAndDequantizeOneScaleFunctor<Device, T> f;
-    f(ctx->eigen_device<Device>(), input.flat<T>(), signed_input_, num_bits_,
+    f(device, input.flat<T>(), signed_input_, num_bits_,
       range_given_, &input_min_tensor, &input_max_tensor, output->flat<T>());
   }
 
@@ -116,13 +129,23 @@ class QuantizeAndDequantizeV3Op : public OpKernel {
         errors::InvalidArgument("num_bits is out of range: ", num_bits_val,
                                 " with signed_input_ ", signed_input_));
 
+    auto device = ctx->eigen_device<Device>();
     Tensor input_min_tensor;
     Tensor input_max_tensor;
     if (range_given_) {
       input_min_tensor = ctx->input(1);
       input_max_tensor = ctx->input(2);
-      auto min_val = input_min_tensor.scalar<T>()();
-      auto max_val = input_max_tensor.scalar<T>()();
+      auto input_min = input_min_tensor.scalar<T>();
+      auto input_max = input_max_tensor.scalar<T>();
+      T min_val;
+      T max_val;
+#ifdef TENSORFLOW_USE_SYCL
+      device.memcpyDeviceToHost(&min_val, input_min.data(), sizeof(T));
+      device.memcpyDeviceToHost(&max_val, input_max.data(), sizeof(T));
+#else
+      min_val = input_min();
+      max_val = input_max();
+#endif // TENSORFLOW_USE_SYCL
       OP_REQUIRES(ctx, min_val <= max_val,
                   errors::InvalidArgument("Invalid range: input_min ", min_val,
                                           " > input_max ", max_val));
@@ -134,7 +157,7 @@ class QuantizeAndDequantizeV3Op : public OpKernel {
     }
 
     functor::QuantizeAndDequantizeOneScaleFunctor<Device, T> f;
-    f(ctx->eigen_device<Device>(), input.flat<T>(), signed_input_, num_bits_val,
+    f(device, input.flat<T>(), signed_input_, num_bits_val,
       range_given_, &input_min_tensor, &input_max_tensor, output->flat<T>());
   }
 
@@ -174,11 +197,19 @@ class QuantizeAndDequantizeOp : public OpKernel {
     Tensor input_min_tensor(DataTypeToEnum<T>::value, TensorShape());
     Tensor input_max_tensor(DataTypeToEnum<T>::value, TensorShape());
     // Initialize the tensors with the values in the Attrs.
-    input_min_tensor.template scalar<T>()() = static_cast<T>(input_min_);
-    input_max_tensor.template scalar<T>()() = static_cast<T>(input_max_);
+    auto device = ctx->eigen_device<Device>();
+    auto input_min = input_min_tensor.scalar<T>();
+    auto input_max = input_max_tensor.scalar<T>();
+#ifdef TENSORFLOW_USE_SYCL
+    input_min.device(device) = input_min.constant(static_cast<T>(input_min_));
+    input_max.device(device) = input_max.constant(static_cast<T>(input_max_));
+#else
+    input_min() = static_cast<T>(input_min_);
+    input_max() = static_cast<T>(input_max_);
+#endif // TENSORFLOW_USE_SYCL
 
     functor::QuantizeAndDequantizeOneScaleFunctor<Device, T> functor;
-    functor(ctx->eigen_device<Device>(), input.flat<T>(), signed_input_,
+    functor(device, input.flat<T>(), signed_input_,
             num_bits_, range_given_, &input_min_tensor, &input_max_tensor,
             output->flat<T>());
   }
@@ -191,8 +222,8 @@ class QuantizeAndDequantizeOp : public OpKernel {
   float input_max_;
 };
 
-// Specialization for CPUDevice.
 namespace functor {
+// Specialization for CPUDevice.
 template <typename T>
 struct QuantizeAndDequantizeOneScaleFunctor<CPUDevice, T> {
   void operator()(const CPUDevice& d, typename TTypes<T>::ConstVec input,
@@ -204,6 +235,21 @@ struct QuantizeAndDequantizeOneScaleFunctor<CPUDevice, T> {
         input_max_tensor, out);
   }
 };
+
+#ifdef TENSORFLOW_USE_SYCL
+// Specialization for SYCLDevice.
+template <typename T>
+struct QuantizeAndDequantizeOneScaleFunctor<SYCLDevice, T> {
+  void operator()(const SYCLDevice& d, typename TTypes<T>::ConstVec input,
+                  const bool signed_input, const int num_bits,
+                  const bool range_given, Tensor* input_min_tensor,
+                  Tensor* input_max_tensor, typename TTypes<T>::Vec out) {
+    QuantizeAndDequantizeOneScaleImpl<SYCLDevice, T>::Compute(
+        d, input, signed_input, num_bits, range_given, input_min_tensor,
+        input_max_tensor, out);
+  }
+};
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace functor
 
 #define REGISTER_CPU_KERNEL(T)                                                 \
@@ -244,4 +290,26 @@ TF_CALL_float(REGISTER_GPU_KERNEL);
 TF_CALL_double(REGISTER_GPU_KERNEL);
 #undef REGISTER_GPU_KERNEL
 #endif
+
+#ifdef TENSORFLOW_USE_SYCL
+
+#define REGISTER_SYCL_KERNEL(T)                                                 \
+  REGISTER_KERNEL_BUILDER(Name("QuantizeAndDequantizeV2")                       \
+                              .Device(DEVICE_SYCL)                              \
+                              .TypeConstraint<T>("T"),                          \
+                          QuantizeAndDequantizeV2Op<SYCLDevice, T>);            \
+  REGISTER_KERNEL_BUILDER(Name("QuantizeAndDequantizeV3")                       \
+                              .Device(DEVICE_SYCL)                              \
+                              .HostMemory("num_bits")                           \
+                              .TypeConstraint<T>("T"),                          \
+                          QuantizeAndDequantizeV3Op<SYCLDevice, T>);            \
+  REGISTER_KERNEL_BUILDER(                                                      \
+      Name("QuantizeAndDequantize").Device(DEVICE_SYCL).TypeConstraint<T>("T"), \
+      QuantizeAndDequantizeOp<SYCLDevice, T>);
+TF_CALL_float(REGISTER_SYCL_KERNEL);
+TF_CALL_SYCL_double(REGISTER_SYCL_KERNEL);
+#undef REGISTER_SYCL_KERNEL
+
+#endif  // TENSORFLOW_USE_SYCL
+
 }  // namespace tensorflow

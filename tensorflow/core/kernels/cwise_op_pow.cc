@@ -24,6 +24,7 @@ REGISTER2(BinaryOp, CPU, "Pow", functor::safe_pow, int32, int64);
 REGISTER4(BinaryOp, GPU, "Pow", functor::pow, float, Eigen::half, double,
           int64);
 #endif
+
 #ifdef TENSORFLOW_USE_SYCL
 #define REGISTER_SYCL(type) REGISTER(BinaryOp, SYCL, "Pow", functor::pow, type)
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);

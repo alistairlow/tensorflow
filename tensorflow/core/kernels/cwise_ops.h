@@ -27,34 +27,13 @@ limitations under the License.
 #include "tensorflow/core/kernels/bounds_check.h"
 
 namespace Eigen {
-namespace numext {
-#if GOOGLE_CUDA
-template <>
-EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE std::complex<float> exp(
-    const std::complex<float>& x) {
-  auto com = ::expf(x.real());
-  auto res_real = com * ::cosf(x.imag());
-  auto res_imag = com * ::sinf(x.imag());
-  return std::complex<float>(res_real, res_imag);
-}
-template <>
-EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE std::complex<double> exp(
-    const std::complex<double>& x) {
-  auto com = ::exp(x.real());
-  auto res_real = com * ::cos(x.imag());
-  auto res_imag = com * ::sin(x.imag());
-  return std::complex<double>(res_real, res_imag);
-}
-#endif
-}  // namespace numext
-
 namespace internal {
 
 template <typename T>
 struct scalar_asinh_op {
   EIGEN_EMPTY_STRUCT_CTOR(scalar_asinh_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& a) const {
-#if EIGEN_HAS_CXX11_MATH
+#if EIGEN_HAS_CXX11_MATH || defined(TENSORFLOW_USE_SYCL)
     return numext::asinh(a);
 #else
     return std::asinh(a);
@@ -70,7 +49,7 @@ template <typename T>
 struct scalar_acosh_op {
   EIGEN_EMPTY_STRUCT_CTOR(scalar_acosh_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& a) const {
-#if EIGEN_HAS_CXX11_MATH
+#if EIGEN_HAS_CXX11_MATH || defined(TENSORFLOW_USE_SYCL)
     return numext::acosh(a);
 #else
     return std::acosh(a);
@@ -86,7 +65,7 @@ template <typename T>
 struct scalar_atanh_op {
   EIGEN_EMPTY_STRUCT_CTOR(scalar_atanh_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& a) const {
-#if EIGEN_HAS_CXX11_MATH
+#if EIGEN_HAS_CXX11_MATH || defined(TENSORFLOW_USE_SYCL)
     return numext::atanh(a);
 #else
     return std::atanh(a);
@@ -326,7 +305,7 @@ struct google_floor_div {
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& x,
                                                            const T& y) const {
     if ((x < T(0)) != (y < T(0))) {
-#if EIGEN_HAS_CXX11_MATH
+#if EIGEN_HAS_CXX11_MATH || defined(TENSORFLOW_USE_SYCL)
       T abs_x = numext::abs(x);
       T abs_y = numext::abs(y);
 #else
@@ -376,14 +355,37 @@ struct functor_traits<google_floor_div_real<Scalar>> {
   };
 };
 
+#ifdef TENSORFLOW_USE_SYCL
+// Avoid division precision issue.
+template <typename T, typename Enable = void>
+struct sycl_floor_div_real {
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& x,
+                                                           const T& y) const {
+    if (cl::sycl::fmod(x, y) == T(0))
+      return cl::sycl::round(x / y);
+    return cl::sycl::floor(x / y);
+  }
+};
+
+template <typename Scalar>
+struct functor_traits<sycl_floor_div_real<Scalar>> {
+  enum {
+    Cost = 2 * Eigen::internal::scalar_div_cost<Scalar, false>::value +
+           2 * NumTraits<Scalar>::AddCost,
+    PacketAccess = false
+  };
+};
+#endif  // TENSORFLOW_USE_SYCL
+
 // TODO(b//32239616): This kernel should be moved into Eigen and vectorized.
 template <typename T>
 struct google_floor_fmod {
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T operator()(const T& x,
                                                            const T& y) const {
     // EIGEN_STATIC_ASSERT(NUMERIC_TYPE_MUST_BE_REAL);
-    T trunc_mod = std::fmod(x, y);
-    return (x < T(0)) == (y < T(0)) ? trunc_mod : std::fmod(trunc_mod + y, y);
+    T trunc_mod = Eigen::numext::fmod(x, y);
+    return (x < T(0)) == (y < T(0)) ? trunc_mod :
+                                      Eigen::numext::fmod(trunc_mod + y, y);
   }
 };
 
@@ -475,6 +477,17 @@ template <typename Scalar>
 struct functor_traits<bitwise_xor_op<Scalar>> {
   enum { Cost = Eigen::NumTraits<Scalar>::AddCost, PacketAccess = true };
 };
+
+#ifdef TENSORFLOW_USE_SYCL
+// Call identity instead of calling round for integer types
+template <typename Scalar>
+struct identity_op {
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const Scalar
+  operator()(const Scalar& x) const {
+    return x;
+  }
+};
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // end namespace internal
 }  // end namespace Eigen
@@ -678,6 +691,11 @@ struct round : base<T, Eigen::internal::scalar_round_op_google<T>> {};
 template <typename T>
 struct ceil : base<T, Eigen::internal::scalar_ceil_op<T>> {};
 
+#ifdef TENSORFLOW_USE_SYCL
+template <typename T>
+struct identity : base<T, Eigen::internal::identity_op<T>> {};
+#endif  // TENSORFLOW_USE_SYCL
+
 /** this should go in Eigen
  * \brief Template functor to compute the round to int value of a scalar
  */
@@ -690,6 +708,8 @@ struct scalar_rint_op {
     return ::rint(a);
 #elif defined(__ANDROID__)
     return rint(a);
+#elif defined(TENSORFLOW_USE_SYCL)
+    return cl::sycl::rint(a);
 #else
     return std::rint(a);
 #endif
@@ -761,6 +781,11 @@ struct safe_floor_mod : base<T, Eigen::internal::safe_div_or_mod_op<
   static const bool has_errors = true;
 };
 
+#ifdef TENSORFLOW_USE_SYCL
+template <typename T>
+struct floor_mod : base<T, Eigen::internal::google_floor_mod<T>> {};
+#endif  // TENSORFLOW_USE_SYCL
+
 template <typename T>
 struct floor_div : base<T, Eigen::internal::google_floor_div<T>> {};
 
@@ -772,6 +797,11 @@ struct safe_floor_div : base<T, Eigen::internal::safe_div_or_mod_op<
 
 template <typename T>
 struct floor_div_real : base<T, Eigen::internal::google_floor_div_real<T>> {};
+
+#ifdef TENSORFLOW_USE_SYCL
+template <typename T>
+struct sycl_floor_div_real : base<T, Eigen::internal::sycl_floor_div_real<T>> {};
+#endif  // TENSORFLOW_USE_SYCL
 
 template <typename T>
 struct pow : base<T, Eigen::internal::scalar_binary_pow_op_google<T, T>> {};
@@ -806,6 +836,8 @@ struct scalar_atan2_op {
   operator()(const Scalar& y, const Scalar& x) const {
 #if GOOGLE_CUDA
     return ::atan2(y, x);
+#elif TENSORFLOW_USE_SYCL
+    return cl::sycl::atan2(y, x);
 #else
     return std::atan2(y, x);
 #endif

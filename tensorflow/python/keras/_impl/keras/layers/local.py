@@ -25,8 +25,8 @@ from tensorflow.python.keras._impl.keras import initializers
 from tensorflow.python.keras._impl.keras import regularizers
 from tensorflow.python.keras._impl.keras.engine import InputSpec
 from tensorflow.python.keras._impl.keras.engine import Layer
-from tensorflow.python.keras._impl.keras.engine.topology import shape_type_conversion
 from tensorflow.python.keras._impl.keras.utils import conv_utils
+from tensorflow.python.keras._impl.keras.utils import tf_utils
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -53,7 +53,7 @@ class LocallyConnected1D(Layer):
 
   Arguments:
       filters: Integer, the dimensionality of the output space
-          (i.e. the number output of filters in the convolution).
+          (i.e. the number of output filters in the convolution).
       kernel_size: An integer or tuple/list of a single integer,
           specifying the length of the 1D convolution window.
       strides: An integer or tuple/list of a single integer,
@@ -120,7 +120,7 @@ class LocallyConnected1D(Layer):
     self.bias_constraint = constraints.get(bias_constraint)
     self.input_spec = InputSpec(ndim=3)
 
-  @shape_type_conversion
+  @tf_utils.shape_type_conversion
   def build(self, input_shape):
     input_dim = input_shape[2]
     if input_dim is None:
@@ -148,7 +148,7 @@ class LocallyConnected1D(Layer):
     self.input_spec = InputSpec(ndim=3, axes={2: input_dim})
     self.built = True
 
-  @shape_type_conversion
+  @tf_utils.shape_type_conversion
   def compute_output_shape(self, input_shape):
     length = conv_utils.conv_output_length(input_shape[1], self.kernel_size[0],
                                            self.padding, self.strides[0])
@@ -222,7 +222,7 @@ class LocallyConnected2D(Layer):
 
   Arguments:
       filters: Integer, the dimensionality of the output space
-          (i.e. the number output of filters in the convolution).
+          (i.e. the number of output filters in the convolution).
       kernel_size: An integer or tuple/list of 2 integers, specifying the
           width and height of the 2D convolution window.
           Can be a single integer to specify the same value for
@@ -307,7 +307,7 @@ class LocallyConnected2D(Layer):
     self.bias_constraint = constraints.get(bias_constraint)
     self.input_spec = InputSpec(ndim=4)
 
-  @shape_type_conversion
+  @tf_utils.shape_type_conversion
   def build(self, input_shape):
     if self.data_format == 'channels_last':
       input_row, input_col = input_shape[1:-1]
@@ -350,7 +350,7 @@ class LocallyConnected2D(Layer):
       self.input_spec = InputSpec(ndim=4, axes={-1: input_filter})
     self.built = True
 
-  @shape_type_conversion
+  @tf_utils.shape_type_conversion
   def compute_output_shape(self, input_shape):
     if self.data_format == 'channels_first':
       rows = input_shape[2]

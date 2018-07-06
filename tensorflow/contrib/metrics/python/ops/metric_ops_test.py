@@ -2128,6 +2128,205 @@ class StreamingDynamicAUCTest(test.TestCase):
       self.assertAlmostEqual(0.90277, auc.eval(), delta=1e-5)
 
 
+class AucWithConfidenceIntervalsTest(test.TestCase):
+
+  def setUp(self):
+    np.random.seed(1)
+    ops.reset_default_graph()
+
+  def _testResultsEqual(self, expected_dict, gotten_result):
+    """Tests that 2 results (dicts) represent the same data.
+
+    Args:
+      expected_dict: A dictionary with keys that are the names of properties
+        of PrecisionRecallData and whose values are lists of floats.
+      gotten_result: A AucWithConfidenceIntervalData object.
+    """
+    gotten_dict = {k: t.eval() for k, t in gotten_result._asdict().items()}
+    self.assertItemsEqual(
+        list(expected_dict.keys()), list(gotten_dict.keys()))
+
+    for key, expected_values in expected_dict.items():
+      self.assertAllClose(expected_values, gotten_dict[key])
+
+  def _testCase(self, predictions, labels, expected_result, weights=None):
+    """Performs a test given a certain scenario of labels, predictions, weights.
+
+    Args:
+      predictions: The predictions tensor. Of type float32.
+      labels: The labels tensor. Of type bool.
+      expected_result: The expected result (dict) that maps to tensors.
+      weights: Optional weights tensor.
+    """
+    with self.test_session() as sess:
+      predictions_tensor = constant_op.constant(
+          predictions, dtype=dtypes_lib.float32)
+      labels_tensor = constant_op.constant(labels, dtype=dtypes_lib.int64)
+      weights_tensor = None
+      if weights:
+        weights_tensor = constant_op.constant(weights, dtype=dtypes_lib.float32)
+      gotten_result, update_op = (
+          metric_ops.auc_with_confidence_intervals(
+              labels=labels_tensor,
+              predictions=predictions_tensor,
+              weights=weights_tensor))
+
+      sess.run(variables.local_variables_initializer())
+      sess.run(update_op)
+
+      self._testResultsEqual(expected_result, gotten_result)
+
+  def testAucAllCorrect(self):
+    self._testCase(
+        predictions=[0., 0.2, 0.3, 0.3, 0.4, 0.5, 0.6, 0.6, 0.8, 1.0],
+        labels=[0, 0, 1, 0, 0, 1, 0, 1, 1, 0],
+        expected_result={
+            'auc': 0.66666667,
+            'lower': 0.27826795,
+            'upper': 0.91208512,
+        })
+
+  def testAucUnorderedInput(self):
+    self._testCase(
+        predictions=[1.0, 0.6, 0., 0.3, 0.4, 0.2, 0.5, 0.3, 0.6, 0.8],
+        labels=[0, 1, 0, 1, 0, 0, 1, 0, 0, 1],
+        expected_result={
+            'auc': 0.66666667,
+            'lower': 0.27826795,
+            'upper': 0.91208512,
+        })
+
+  def testAucWithWeights(self):
+    self._testCase(
+        predictions=[0., 0.2, 0.3, 0.3, 0.4, 0.5, 0.6, 0.6, 0.8, 1.0],
+        labels=[0, 0, 1, 0, 0, 1, 0, 1, 1, 0],
+        weights=[0.5, 0.6, 1.2, 1.5, 2.0, 2.0, 1.5, 1.2, 0.6, 0.5],
+        expected_result={
+            'auc': 0.65151515,
+            'lower': 0.28918604,
+            'upper': 0.89573906,
+        })
+
+  def testAucEqualOne(self):
+    self._testCase(
+        predictions=[0, 0.2, 0.3, 0.3, 0.4, 0.5, 0.6, 0.6, 0.8, 1.0],
+        labels=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+        expected_result={
+            'auc': 1.0,
+            'lower': 1.0,
+            'upper': 1.0,
+        })
+
+  def testAucEqualZero(self):
+    self._testCase(
+        predictions=[0, 0.2, 0.3, 0.3, 0.4, 0.5, 0.6, 0.6, 0.8, 1.0],
+        labels=[1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        expected_result={
+            'auc': 0.0,
+            'lower': 0.0,
+            'upper': 0.0,
+        })
+
+  def testNonZeroOnePredictions(self):
+    self._testCase(
+        predictions=[2.5, -2.5, .5, -.5, 1],
+        labels=[1, 0, 1, 0, 0],
+        expected_result={
+            'auc': 0.83333333,
+            'lower': 0.15229267,
+            'upper': 0.99286517,
+        })
+
+  def testAllLabelsOnes(self):
+    self._testCase(
+        predictions=[1., 1., 1., 1., 1.],
+        labels=[1, 1, 1, 1, 1],
+        expected_result={
+            'auc': 0.,
+            'lower': 0.,
+            'upper': 0.,
+        })
+
+  def testAllLabelsZeros(self):
+    self._testCase(
+        predictions=[0., 0., 0., 0., 0.],
+        labels=[0, 0, 0, 0, 0],
+        expected_result={
+            'auc': 0.,
+            'lower': 0.,
+            'upper': 0.,
+        })
+
+  def testWeightSumLessThanOneAll(self):
+    self._testCase(
+        predictions=[1., 1., 0., 1., 0., 0.],
+        labels=[1, 1, 1, 0, 0, 0],
+        weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+        expected_result={
+            'auc': 0.,
+            'lower': 0.,
+            'upper': 0.,
+        })
+
+  def testWithMultipleUpdates(self):
+    batch_size = 50
+    num_batches = 100
+    labels = np.array([])
+    predictions = np.array([])
+    tf_labels = variables.Variable(array_ops.ones(batch_size, dtypes_lib.int32),
+                                   collections=[ops.GraphKeys.LOCAL_VARIABLES],
+                                   dtype=dtypes_lib.int32)
+    tf_predictions = variables.Variable(
+        array_ops.ones(batch_size),
+        collections=[ops.GraphKeys.LOCAL_VARIABLES],
+        dtype=dtypes_lib.float32)
+    auc, update_op = metrics.auc_with_confidence_intervals(tf_labels,
+                                                           tf_predictions)
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+      for _ in xrange(num_batches):
+        new_labels = np.random.randint(0, 2, size=batch_size)
+        noise = np.random.normal(0.0, scale=0.2, size=batch_size)
+        new_predictions = 0.4 + 0.2 * new_labels + noise
+        labels = np.concatenate([labels, new_labels])
+        predictions = np.concatenate([predictions, new_predictions])
+        sess.run(tf_labels.assign(new_labels))
+        sess.run(tf_predictions.assign(new_predictions))
+        sess.run(update_op)
+        expected_auc = _np_auc(predictions, labels)
+        self.assertAllClose(expected_auc, auc.auc.eval())
+
+  def testExceptionOnFloatLabels(self):
+    with self.test_session() as sess:
+      predictions = constant_op.constant([1, 0.5, 0, 1, 0], dtypes_lib.float32)
+      labels = constant_op.constant([0.7, 0, 1, 0, 1])
+      _, update_op = metrics.auc_with_confidence_intervals(labels, predictions)
+      sess.run(variables.local_variables_initializer())
+      self.assertRaises(TypeError, sess.run(update_op))
+
+  def testExceptionOnGreaterThanOneLabel(self):
+    with self.test_session() as sess:
+      predictions = constant_op.constant([1, 0.5, 0, 1, 0], dtypes_lib.float32)
+      labels = constant_op.constant([2, 1, 0, 1, 0])
+      _, update_op = metrics.auc_with_confidence_intervals(labels, predictions)
+      sess.run(variables.local_variables_initializer())
+      with self.assertRaisesRegexp(
+          errors_impl.InvalidArgumentError,
+          '.*labels must be 0 or 1, at least one is >1.*'):
+        sess.run(update_op)
+
+  def testExceptionOnNegativeLabel(self):
+    with self.test_session() as sess:
+      predictions = constant_op.constant([1, 0.5, 0, 1, 0], dtypes_lib.float32)
+      labels = constant_op.constant([1, 0, -1, 1, 0])
+      _, update_op = metrics.auc_with_confidence_intervals(labels, predictions)
+      sess.run(variables.local_variables_initializer())
+      with self.assertRaisesRegexp(
+          errors_impl.InvalidArgumentError,
+          '.*labels must be 0 or 1, at least one is <0.*'):
+        sess.run(update_op)
+
+
 class StreamingPrecisionRecallAtEqualThresholdsTest(test.TestCase):
 
   def setUp(self):
@@ -3179,6 +3378,138 @@ class RecallAtPrecisionTest(test.TestCase):
       target_recall = 2.0 / 3.0
       self.assertAlmostEqual(target_recall, sess.run(update_op))
       self.assertAlmostEqual(target_recall, recall.eval())
+
+
+class PrecisionAtRecallTest(test.TestCase):
+
+  def setUp(self):
+    np.random.seed(1)
+    ops.reset_default_graph()
+
+  def testVars(self):
+    metrics.precision_at_recall(
+        predictions=array_ops.ones((10, 1)),
+        labels=array_ops.ones((10, 1)),
+        target_recall=0.7)
+    _assert_metric_variables(self,
+                             ('precision_at_recall/true_positives:0',
+                              'precision_at_recall/false_negatives:0',
+                              'precision_at_recall/false_positives:0',
+                              'precision_at_recall/true_negatives:0'))
+
+  def testMetricsCollection(self):
+    my_collection_name = '__metrics__'
+    mean, _ = metrics.precision_at_recall(
+        predictions=array_ops.ones((10, 1)),
+        labels=array_ops.ones((10, 1)),
+        target_recall=0.7,
+        metrics_collections=[my_collection_name])
+    self.assertListEqual(ops.get_collection(my_collection_name), [mean])
+
+  def testUpdatesCollection(self):
+    my_collection_name = '__updates__'
+    _, update_op = metrics.precision_at_recall(
+        predictions=array_ops.ones((10, 1)),
+        labels=array_ops.ones((10, 1)),
+        target_recall=0.7,
+        updates_collections=[my_collection_name])
+    self.assertListEqual(ops.get_collection(my_collection_name), [update_op])
+
+  def testValueTensorIsIdempotent(self):
+    predictions = random_ops.random_uniform(
+        (10, 3), maxval=1, dtype=dtypes_lib.float32, seed=1)
+    labels = random_ops.random_uniform(
+        (10, 3), maxval=2, dtype=dtypes_lib.int64, seed=1)
+    precision, update_op = metrics.precision_at_recall(
+        labels, predictions, target_recall=0.7)
+
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+
+      # Run several updates.
+      for _ in range(10):
+        sess.run(update_op)
+
+      # Then verify idempotency.
+      initial_precision = precision.eval()
+      for _ in range(10):
+        self.assertAlmostEqual(initial_precision, precision.eval(), places=5)
+
+  def testAllCorrect(self):
+    inputs = np.random.randint(0, 2, size=(100, 1))
+
+    predictions = constant_op.constant(inputs, dtype=dtypes_lib.float32)
+    labels = constant_op.constant(inputs)
+    precision, update_op = metrics.precision_at_recall(
+        labels, predictions, target_recall=0.7)
+
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+      self.assertEqual(1, sess.run(update_op))
+      self.assertEqual(1, precision.eval())
+
+  def testAllIncorrect(self):
+    inputs = np.random.randint(0, 2, size=(100, 1))
+
+    predictions = constant_op.constant(inputs, dtype=dtypes_lib.float32)
+    labels = 1.0 - predictions
+    label_prior = math_ops.reduce_mean(labels)
+    precision, update_op = metrics.precision_at_recall(
+        labels, predictions, target_recall=0.2)
+
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+      self.assertEqual(sess.run(label_prior), sess.run(update_op))
+      self.assertEqual(sess.run(label_prior), precision.eval())
+
+  def testSomeCorrectHighRecall(self):
+    predictions_values = [0.1, 0.2, 0.5, 0.3, 0.0, 0.1, 0.45, 0.5, 0.8, 0.9]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = constant_op.constant(
+        predictions_values, dtype=dtypes_lib.float32)
+    labels = constant_op.constant(labels_values)
+    precision, update_op = metrics.precision_at_recall(
+        labels, predictions, target_recall=0.8)
+
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+      self.assertAlmostEqual(0.8, sess.run(update_op))
+      self.assertAlmostEqual(0.8, precision.eval())
+
+  def testSomeCorrectLowRecall(self):
+    predictions_values = [0.1, 0.2, 0.7, 0.3, 0.0, 0.1, 0.45, 0.5, 0.6, 0.9]
+    labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+    predictions = constant_op.constant(
+        predictions_values, dtype=dtypes_lib.float32)
+    labels = constant_op.constant(labels_values)
+    precision, update_op = metrics.precision_at_recall(
+        labels, predictions, target_recall=0.4)
+
+    with self.test_session() as sess:
+      sess.run(variables.local_variables_initializer())
+      self.assertAlmostEqual(2.0/3, sess.run(update_op))
+      self.assertAlmostEqual(2.0/3, precision.eval())
+
+  def testWeighted_multipleLabelDtypes(self):
+    for label_dtype in (dtypes_lib.bool, dtypes_lib.int32, dtypes_lib.float32):
+      predictions_values = [
+          0.0, 0.1, 0.2, 0.3, 0.4, 0.1, 0.22, 0.25, 0.31, 0.35]
+      labels_values = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+      weights_values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+      predictions = constant_op.constant(
+          predictions_values, dtype=dtypes_lib.float32)
+      labels = math_ops.cast(labels_values, dtype=label_dtype)
+      weights = constant_op.constant(weights_values)
+      precision, update_op = metrics.precision_at_recall(
+          labels, predictions, target_recall=0.8, weights=weights)
+
+      with self.test_session() as sess:
+        sess.run(variables.local_variables_initializer())
+        self.assertAlmostEqual(34.0/43, sess.run(update_op))
+        self.assertAlmostEqual(34.0/43, precision.eval())
 
 
 class StreamingFNRThresholdsTest(test.TestCase):

@@ -182,7 +182,7 @@ REGISTER_SELECT_GPU(complex128);
 
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SELECT_SYCL);
 TF_CALL_int32(REGISTER_SELECT_SYCL);
-REGISTER_SELECT_SYCL(int64);
+TF_CALL_int64(REGISTER_SELECT_SYCL);
 #undef REGISTER_SELECT_SYCL
 #endif  // TENSORFLOW_USE_SYCL
 
@@ -220,6 +220,7 @@ struct SelectScalarFunctorBase {
 template <typename T>
 struct SelectScalarFunctor<CPUDevice, T>
     : SelectScalarFunctorBase<CPUDevice, T> {};
+
 #ifdef TENSORFLOW_USE_SYCL
 template <typename T>
 struct SelectScalarFunctor<SYCLDevice, T> {

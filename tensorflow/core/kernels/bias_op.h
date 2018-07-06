@@ -49,6 +49,20 @@ struct Bias {
   }
 };
 
+#ifdef TENSORFLOW_USE_SYCL
+typedef Eigen::SyclDevice SYCLDevice;
+template <typename T>
+struct Bias<SYCLDevice, T, 1> {
+  void operator()(const SYCLDevice& d, typename TTypes<T>::ConstVec input,
+                  typename TTypes<T>::ConstVec bias,
+                  typename TTypes<T>::Vec output) {
+    Eigen::DSizes<Eigen::DenseIndex, 1>
+      bcast(input.dimension(0) / bias.dimension(0));
+    output.device(d) = input + bias.broadcast(bcast);
+  }
+};
+#endif  // TENSORFLOW_USE_SYCL
+
 }  // namespace functor
 }  // namespace tensorflow
 

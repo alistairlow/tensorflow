@@ -19,15 +19,16 @@ namespace tensorflow {
 REGISTER5(UnaryOp, CPU, "Round", functor::round, Eigen::half, float, double,
           int32, int64);
 
+#if GOOGLE_CUDA
+REGISTER5(UnaryOp, GPU, "Round", functor::round, Eigen::half, float, double,
+          int32, int64);
+#endif
+
 #ifdef TENSORFLOW_USE_SYCL
+REGISTER2(UnaryOp, SYCL, "Round", functor::identity, int32, int64);
 #define REGISTER_SYCL(type) \
   REGISTER(UnaryOp, SYCL, "Round", functor::round, type)
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 #undef REGISTER_SYCL
 #endif  // TENSORFLOW_USE_SYCL
-
-#if GOOGLE_CUDA
-REGISTER5(UnaryOp, GPU, "Round", functor::round, Eigen::half, float, double,
-          int32, int64);
-#endif
 }  // namespace tensorflow

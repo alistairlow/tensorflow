@@ -29,6 +29,7 @@ from tensorflow.contrib.framework.python.ops import variables as variables_lib
 from tensorflow.contrib.metrics.python.ops import metric_ops
 from tensorflow.contrib.slim.python.slim import evaluation
 from tensorflow.contrib.training.python.training import evaluation as evaluation_lib
+from tensorflow.core.protobuf import saver_pb2
 from tensorflow.python.debug.lib import debug_data
 from tensorflow.python.debug.wrappers import hooks
 from tensorflow.python.framework import constant_op
@@ -175,6 +176,17 @@ class EvaluationTest(test.TestCase):
     self.assertGreater(end, start + 0.5)
     # The timeout kicked in.
     self.assertLess(end, start + 1.1)
+
+  def testTimeoutFnOnEvaluationLoop(self):
+    # We require a mutable object (e.g. list but not an int) to maintain state
+    # across calls of a nested function.
+    timeout_fn_calls = [0]
+    def _TimeoutFn():
+      timeout_fn_calls[0] += 1
+      return timeout_fn_calls[0] >= 3
+    # Need not do any evaluation, but should just call timeout_fn repeatedly.
+    evaluation.evaluation_loop('', '', '', timeout=0, timeout_fn=_TimeoutFn)
+    self.assertEqual(timeout_fn_calls[0], 3)
 
   def testMonitorCheckpointsLoopTimeout(self):
     ret = list(

@@ -20,4 +20,10 @@ REGISTER2(UnaryOp, CPU, "Rint", functor::rint, float, double);
 #if GOOGLE_CUDA
 REGISTER2(UnaryOp, GPU, "Rint", functor::rint, float, double);
 #endif
+
+#ifdef TENSORFLOW_USE_SYCL
+#define REGISTER_SYCL(type) REGISTER(UnaryOp, SYCL, "Rint", functor::rint, type)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#undef REGISTER_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

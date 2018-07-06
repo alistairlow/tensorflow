@@ -20,14 +20,14 @@ namespace tensorflow {
 REGISTER4(UnaryOp, CPU, "Asinh", functor::asinh, float, double, complex64,
           complex128);
 
+#if GOOGLE_CUDA
+REGISTER2(UnaryOp, GPU, "Asinh", functor::asinh, float, double);
+#endif
+
 #ifdef TENSORFLOW_USE_SYCL
 #define REGISTER_SYCL(type) \
   REGISTER(UnaryOp, SYCL, "Asinh", functor::asinh, type)
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 #undef REGISTER_SYCL
 #endif  // TENSORFLOW_USE_SYCL
-
-#if GOOGLE_CUDA
-REGISTER2(UnaryOp, GPU, "Asinh", functor::asinh, float, double);
-#endif
 }  // namespace tensorflow

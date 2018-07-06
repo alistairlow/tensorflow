@@ -175,6 +175,86 @@ class BiasOp : public BinaryOp<T> {
   TensorFormat data_format_;
 };
 
+#ifdef TENSORFLOW_USE_SYCL
+template <typename T>
+class BiasOp<SYCLDevice, T> : public BinaryOp<T> {
+ public:
+  explicit BiasOp(OpKernelConstruction* context) : BinaryOp<T>(context) {
+    string data_format;
+    if (context->GetAttr("data_format", &data_format).ok()) {
+      OP_REQUIRES(context, FormatFromString(data_format, &data_format_),
+                  errors::InvalidArgument("Invalid data format"));
+    } else {
+      data_format_ = FORMAT_NHWC;
+    }
+  }
+
+  void Compute(OpKernelContext* context) override {
+    const Tensor& input = context->input(0);
+    const Tensor& bias = context->input(1);
+
+    OP_REQUIRES(context, TensorShapeUtils::IsMatrixOrHigher(input.shape()),
+                errors::InvalidArgument("Input tensor must be at least 2D: ",
+                                        input.shape().DebugString()));
+    OP_REQUIRES(context, TensorShapeUtils::IsVector(bias.shape()),
+                errors::InvalidArgument("Biases must be 1D: ",
+                                        bias.shape().DebugString()));
+
+    // Added by intel_tf to support NCHW on CPU regardless of MKL used or not.
+    size_t channel_dim;
+    if (data_format_ == FORMAT_NCHW) {
+      OP_REQUIRES(context, input.dims() == 4,
+                  errors::InvalidArgument(
+                      "NCHW format supports only 4D input tensor."));
+      channel_dim = 1;
+    } else {
+      channel_dim = input.shape().dims() - 1;  // End of code by intel_tf.
+    }
+
+    OP_REQUIRES(
+        context,
+        bias.shape().dim_size(0) == input.shape().dim_size(channel_dim),
+        errors::InvalidArgument(
+            "Must provide as many biases as the last dimension "
+            "of the input tensor: ",
+            bias.shape().DebugString(), " vs. ", input.shape().DebugString()));
+
+    Tensor* output = nullptr;
+    OP_REQUIRES_OK(context, context->forward_input_or_allocate_output(
+                                {0}, 0, input.shape(), &output));
+    if (input.NumElements() == 0) {
+      return;
+    }
+
+    // Added by intel_tf to support NCHW on CPU regardless of MKL used or not.
+    if (data_format_ == FORMAT_NCHW) {
+      int32 batch, height, width, channel;
+      GetBiasValueDims(input, data_format_, &batch, &height, &width, &channel);
+      Eigen::DSizes<int32, 4> four_dims(1, channel, 1, 1);
+      Eigen::DSizes<int32, 4> broad_cast_dims(batch, 1, height, width);
+      const SYCLDevice& d = context->eigen_device<SYCLDevice>();
+      output->tensor<T, 4>().device(d) =
+          input.tensor<T, 4>() +
+          bias.tensor<T, 1>().reshape(four_dims).broadcast(broad_cast_dims);
+      return;
+    }  // End of code by intel_tf.
+
+    Compute(context, input, bias, output);
+  }
+
+  // Add biases for an input matrix of rank Dims, by using the Bias.
+  void Compute(OpKernelContext* ctx, const Tensor& input, const Tensor& bias,
+               Tensor* output) {
+    functor::Bias<SYCLDevice, T, 1> functor;
+    functor(ctx->eigen_device<SYCLDevice>(), input.flat<T>(), bias.vec<T>(),
+            output->flat<T>());
+  }
+
+ private:
+  TensorFormat data_format_;
+};
+#endif  // TENSORFLOW_USE_SYCL
+
 #define REGISTER_KERNEL(type)                                         \
   REGISTER_KERNEL_BUILDER(                                            \
       Name("BiasAdd").Device(DEVICE_CPU).TypeConstraint<type>("T"),   \
@@ -195,7 +275,6 @@ TF_CALL_NUMBER_TYPES(REGISTER_KERNEL);
       Name("BiasAddV1").Device(DEVICE_SYCL).TypeConstraint<type>("T"), \
       BiasOp<SYCLDevice, type>);
 
-TF_CALL_INTEGRAL_TYPES(REGISTER_KERNEL);
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_KERNEL);
 #undef REGISTER_KERNEL
 #endif  // TENSORFLOW_USE_SYCL
@@ -392,8 +471,8 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
     if (channel == 0) return;
     auto* stream = context->op_device_context()->stream();
     OP_REQUIRES(context, stream, errors::Internal("No GPU stream available."));
-    perftools::gputools::DeviceMemoryBase output_ptr(
-        output->flat<T>().data(), output->NumElements() * sizeof(T));
+    se::DeviceMemoryBase output_ptr(output->flat<T>().data(),
+                                    output->NumElements() * sizeof(T));
     stream->ThenMemZero(&output_ptr, output->NumElements() * sizeof(T));
     if (output_backprop.NumElements() > 0) {
       BiasGradGPU<T>::compute(context->template eigen_device<Device>(),

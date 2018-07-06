@@ -24,11 +24,15 @@ limitations under the License.
 namespace tensorflow {
 
 using CpuDevice = Eigen::ThreadPoolDevice;
+#ifdef TENSORFLOW_USE_SYCL
+using SYCLDevice = Eigen::SyclDevice;
+#endif  // TENSORFLOW_USE_SYCL
 
 #define DEFINE_CPU_SPECS(T)                                                    \
   template struct functor::MirrorPad<CpuDevice, T, int32, CPU_PROVIDED_IXDIM>; \
   template struct functor::MirrorPad<CpuDevice, T, int64, CPU_PROVIDED_IXDIM>;
 TF_CALL_POD_TYPES(DEFINE_CPU_SPECS);
+TF_CALL_string(DEFINE_CPU_SPECS);
 #undef DEFINE_CPU_SPECS
 
 #define DEFINE_CPU_SPECS(T)                                   \
@@ -38,6 +42,22 @@ TF_CALL_POD_TYPES(DEFINE_CPU_SPECS);
                                          CPU_PROVIDED_IXDIM>;
 TF_CALL_NUMBER_TYPES(DEFINE_CPU_SPECS);
 #undef DEFINE_CPU_SPECS
+
+#ifdef TENSORFLOW_USE_SYCL
+#define DEFINE_SYCL_SPECS(T)                                                    \
+  template struct functor::MirrorPad<SYCLDevice, T, int32, CPU_PROVIDED_IXDIM>; \
+  template struct functor::MirrorPad<SYCLDevice, T, int64, CPU_PROVIDED_IXDIM>;
+TF_CALL_SYCL_NUMBER_TYPES(DEFINE_SYCL_SPECS);
+#undef DEFINE_SYCL_SPECS
+
+#define DEFINE_SYCL_SPECS(T)                                   \
+  template struct functor::MirrorPadGrad<SYCLDevice, T, int32, \
+                                         CPU_PROVIDED_IXDIM>;  \
+  template struct functor::MirrorPadGrad<SYCLDevice, T, int64, \
+                                         CPU_PROVIDED_IXDIM>;
+TF_CALL_SYCL_NUMBER_TYPES(DEFINE_SYCL_SPECS);
+#undef DEFINE_SYCL_SPECS
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow
 

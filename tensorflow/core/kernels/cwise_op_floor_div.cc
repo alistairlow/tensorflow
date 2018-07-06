@@ -16,8 +16,8 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(BinaryOp, CPU, "FloorDiv", functor::safe_floor_div, uint8, uint16,
-          int16, int32, int64);
+REGISTER6(BinaryOp, CPU, "FloorDiv", functor::safe_floor_div, uint8, uint16,
+          int8, int16, int32, int64);
 REGISTER3(BinaryOp, CPU, "FloorDiv", functor::floor_div_real, float,
           Eigen::half, double);
 
@@ -45,10 +45,11 @@ REGISTER_KERNEL_BUILDER(Name("FloorDiv")
 REGISTER4(BinaryOp, SYCL, "FloorDiv", functor::floor_div, uint8, uint16, int16,
           int64);
 #define REGISTER_SYCL(type) \
-  REGISTER(BinaryOp, SYCL, "FloorDiv", functor::floor_div_real, type);
+  REGISTER(BinaryOp, SYCL, "FloorDiv", functor::sycl_floor_div_real, type);
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 #undef REGISTER_SYCL
 
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(Name("FloorDiv")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")

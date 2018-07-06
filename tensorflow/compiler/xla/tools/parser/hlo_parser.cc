@@ -303,18 +303,14 @@ bool HloParser::ParseComputations() {
     // set the layouts to what the hlo text says.
     for (int p = 0; p < computation->num_parameters(); p++) {
       const Shape& param_shape = computation->parameter_instruction(p)->shape();
-      if (param_shape.has_layout()) {
-        module_->mutable_entry_computation_layout()
-            ->mutable_parameter_layout(p)
-            ->ResetLayout(param_shape.layout());
-      }
+      TF_CHECK_OK(module_->mutable_entry_computation_layout()
+                      ->mutable_parameter_layout(p)
+                      ->CopyLayoutFromShape(param_shape));
     }
     const Shape& result_shape = computation->root_instruction()->shape();
-    if (result_shape.has_layout()) {
-      module_->mutable_entry_computation_layout()
-          ->mutable_result_layout()
-          ->ResetLayout(result_shape.layout());
-    }
+    TF_CHECK_OK(module_->mutable_entry_computation_layout()
+                    ->mutable_result_layout()
+                    ->CopyLayoutFromShape(result_shape));
   }
 
   return true;
@@ -470,6 +466,7 @@ bool HloParser::ParseInstruction(HloComputation::Builder* builder,
     case HloOpcode::kRoundNearestAfz:
     case HloOpcode::kBitcast:
     case HloOpcode::kCeil:
+    case HloOpcode::kClz:
     case HloOpcode::kCopy:
     case HloOpcode::kCos:
     case HloOpcode::kExp:
@@ -994,6 +991,20 @@ bool HloParser::ParseInstruction(HloComputation::Builder* builder,
           shape, operands, *custom_call_target));
       break;
     }
+    case HloOpcode::kHostCompute: {
+      optional<string> channel_name;
+      optional<int64> cost_estimate_ns;
+      attrs["channel_name"] = {/*required=*/true, AttrTy::kString,
+                               &channel_name};
+      attrs["cost_estimate_ns"] = {/*required=*/true, AttrTy::kInt64,
+                                   &cost_estimate_ns};
+      if (!ParseOperands(&operands) || !ParseAttributes(attrs)) {
+        return false;
+      }
+      instruction = builder->AddInstruction(HloInstruction::CreateHostCompute(
+          shape, operands, *channel_name, *cost_estimate_ns));
+      break;
+    }
     case HloOpcode::kDot: {
       optional<std::vector<int64>> lhs_contracting_dims;
       attrs["lhs_contracting_dims"] = {
@@ -1033,6 +1044,40 @@ bool HloParser::ParseInstruction(HloComputation::Builder* builder,
 
       instruction = builder->AddInstruction(
           HloInstruction::CreateDot(shape, operands[0], operands[1], dnum));
+      break;
+    }
+    case HloOpcode::kGather: {
+      optional<std::vector<int64>> output_window_dims;
+      attrs["output_window_dims"] = {
+          /*required=*/true, AttrTy::kBracedInt64List, &output_window_dims};
+      optional<std::vector<int64>> elided_window_dims;
+      attrs["elided_window_dims"] = {
+          /*required=*/true, AttrTy::kBracedInt64List, &elided_window_dims};
+      optional<std::vector<int64>> gather_dims_to_operand_dims;
+      attrs["gather_dims_to_operand_dims"] = {/*required=*/true,
+                                              AttrTy::kBracedInt64List,
+                                              &gather_dims_to_operand_dims};
+      optional<int64> index_vector_dim;
+      attrs["index_vector_dim"] = {/*required=*/true, AttrTy::kInt64,
+                                   &index_vector_dim};
+      optional<std::vector<int64>> window_bounds;
+      attrs["window_bounds"] = {/*required=*/true, AttrTy::kBracedInt64List,
+                                &window_bounds};
+
+      if (!ParseOperands(&operands, /*expected_size=*/2) ||
+          !ParseAttributes(attrs)) {
+        return false;
+      }
+
+      GatherDimensionNumbers dim_numbers = HloInstruction::MakeGatherDimNumbers(
+          /*output_window_dims=*/*output_window_dims,
+          /*elided_window_dims=*/*elided_window_dims,
+          /*gather_dims_to_operand_dims=*/*gather_dims_to_operand_dims,
+          /*index_vector_dim=*/*index_vector_dim);
+
+      instruction = builder->AddInstruction(HloInstruction::CreateGather(
+          shape, /*operand=*/operands[0], /*gather_indices=*/operands[1],
+          dim_numbers, *window_bounds));
       break;
     }
     case HloOpcode::kTrace:

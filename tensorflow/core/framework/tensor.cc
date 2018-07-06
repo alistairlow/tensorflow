@@ -610,11 +610,15 @@ bool Tensor::IsInitialized() const {
 }
 
 void Tensor::CheckType(DataType expected_dtype) const {
-  CHECK_EQ(dtype(), expected_dtype);
+  CHECK_EQ(dtype(), expected_dtype)
+      << DataTypeString(expected_dtype) << " expected, got "
+      << DataTypeString(dtype());
 }
 
 void Tensor::CheckTypeAndIsAligned(DataType expected_dtype) const {
-  CHECK_EQ(dtype(), expected_dtype);
+  CHECK_EQ(dtype(), expected_dtype)
+      << DataTypeString(expected_dtype) << " expected, got "
+      << DataTypeString(dtype());
   CHECK(IsAligned()) << "CheckTypeAndIsAligned";
 }
 
@@ -876,7 +880,12 @@ size_t Tensor::AllocatedBytes() const {
 }
 
 bool Tensor::CanUseDMA() const {
+  // NOTE: SYCL fakes DMA
+#ifdef TENSORFLOW_USE_SYCL
+  return true;
+#else
   CASES(dtype(), return is_simple_type<T>::value);
+#endif  // TENSORFLOW_USE_SYCL
   return false;  // Makes compiler happy.
 }
 
@@ -884,6 +893,32 @@ bool Tensor::CanUseDMA() const {
 #undef CASE
 
 namespace {
+
+// StrCat and StrAppend don't support Eigen::half directly at the moment, and
+// we would like to keep them compatible with their absl counterparts, for ease
+// of migration. We could rely on errors::internal::PrepareForStrCat() but the
+// logic is so simple we can just replicate it here, where it is close to its
+// usage and easy to change later. And there's the extra benefit of not
+// accessing an 'internal' namespace.
+#ifdef TENSORFLOW_USE_SYCL
+// SYCL needs a workaround because Eigen::half has an implicit contructor
+// and cast from and to cl::sycl::half
+template<typename T>
+inline const T PrintOneElement(const T a) {
+  return a;
+}
+inline float PrintOneElement(const Eigen::half& h) {
+  return static_cast<float>(h);
+}
+#else
+inline const strings::AlphaNum& PrintOneElement(const strings::AlphaNum& a) {
+  return a;
+}
+inline float PrintOneElement(const Eigen::half& h) {
+  return static_cast<float>(h);
+}
+#endif  // TENSORFLOW_USE_SYCL
+
 // Print from left dim to right dim recursively.
 template <typename T>
 void PrintOneDim(int dim_index, const gtl::InlinedVector<int64, 4>& shape,
@@ -896,7 +931,7 @@ void PrintOneDim(int dim_index, const gtl::InlinedVector<int64, 4>& shape,
     for (int64 i = 0; i < element_count; i++) {
       if (*data_index >= limit) return;
       if (i > 0) strings::StrAppend(result, " ");
-      strings::StrAppend(result, data[(*data_index)++]);
+      strings::StrAppend(result, PrintOneElement(data[(*data_index)++]));
     }
     return;
   }
@@ -927,7 +962,7 @@ string SummarizeArray(int64 limit, int64 num_elts,
   if (shape.empty()) {
     for (int64 i = 0; i < limit; ++i) {
       if (i > 0) strings::StrAppend(&ret, " ");
-      strings::StrAppend(&ret, array[i]);
+      strings::StrAppend(&ret, PrintOneElement(array[i]));
     }
     if (num_elts > limit) strings::StrAppend(&ret, "...");
     return ret;
@@ -1025,9 +1060,8 @@ StringPiece Tensor::tensor_data() const {
 }
 
 bool Tensor::SharesBufferWith(const Tensor& b) const {
-  CHECK_NE(nullptr, buf_);
-  CHECK_NE(nullptr, b.buf_);
-  return buf_->root_buffer() == b.buf_->root_buffer();
+  return buf_ != nullptr && b.buf_ != nullptr &&
+         buf_->root_buffer() == b.buf_->root_buffer();
 }
 
 string Tensor::DebugString() const {

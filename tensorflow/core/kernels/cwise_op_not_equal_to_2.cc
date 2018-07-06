@@ -31,8 +31,8 @@ REGISTER6(BinaryOp, GPU, "NotEqual", functor::not_equal_to, int8, int16, int64,
 #endif  // GOOGLE_CUDA
 
 #ifdef TENSORFLOW_USE_SYCL
-REGISTER4(BinaryOp, SYCL, "NotEqual", functor::not_equal_to, int8, int16, int64,
-          bool);
+REGISTER5(BinaryOp, SYCL, "NotEqual", functor::not_equal_to, int8, int16,
+          int32, int64, bool);
 #endif  // TENSORFLOW_USE_SYCL
 
 #endif  // !defined(__ANDROID_TYPES_SLIM__)

@@ -40,7 +40,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/cuda_solvers.h"
 #include "tensorflow/core/platform/cuda.h"
 
-using ::perftools::gputools::cuda::ScopedActivateExecutorContext;
+using stream_executor::cuda::ScopedActivateExecutorContext;
 #endif  // GOOGLE_CUDA
 
 namespace tensorflow {
@@ -245,7 +245,7 @@ class SegmentSumGPUOp : public AsyncOpKernel {
       return;
     }
 
-    perftools::gputools::DeviceMemoryBase output_rows_device(
+    se::DeviceMemoryBase output_rows_device(
         const_cast<Tensor&>(segment_ids).template flat<Index>().data() +
         (num_indices - 1));
     ScratchSpace<Index> output_rows_host(context, 1, /* on_host */ true);
@@ -297,6 +297,126 @@ class SegmentSumGPUOp : public AsyncOpKernel {
   }
 };
 #endif  // GOOGLE_CUDA
+
+#ifdef TENSORFLOW_USE_SYCL
+// This operator handles reducing segments along the first dimension.
+// See core/ops/math_ops.cc for more details.
+template <typename Device, class T, class Index, typename Reducer,
+          int default_value>
+class SegmentReductionSYCLOp : public OpKernel {
+ public:
+  explicit SegmentReductionSYCLOp(OpKernelConstruction* context)
+      : OpKernel(context) {}
+
+  void Compute(OpKernelContext* context) override {
+    const Tensor& input = context->input(0);
+    const Tensor& segment_ids = context->input(1);
+
+    if (!SegmentReductionDoValidation(context, input, segment_ids))
+      return;
+
+    const int64 num_indices = segment_ids.NumElements();
+    auto input_flat = input.flat_outer_dims<T>();
+    const int64 num_col = input_flat.dimension(1);
+
+    const auto segment_vec = segment_ids.vec<Index>();
+    // Note that the current implementation assumes that segment_vec values are
+    // sorted.
+    const Index output_rows =
+        num_indices > 0
+            ? internal::SubtleMustCopy(segment_vec(num_indices - 1)) + 1
+            : 0;
+    OP_REQUIRES(context, output_rows >= 0,
+                errors::InvalidArgument("segment ids must be >= 0"));
+
+    TensorShape output_shape = input.shape();
+    output_shape.set_dim(0, output_rows);
+
+    // Note that we do not initialize the output buffer with a default value, so
+    // we need to explicitly set missing indices to the default value.
+    Tensor* output = nullptr;
+    OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
+    if (num_indices == 0)
+      return;
+    OP_REQUIRES(context, output_rows > 0,
+                errors::InvalidArgument("segment ids must be >= 0"));
+    auto output_flat = output->flat_outer_dims<T>();
+
+    Eigen::DSizes<Eigen::DenseIndex, 2> in_slice_offset({0, 0});
+    Eigen::DSizes<Eigen::DenseIndex, 2> in_slice_extents({1, num_col});
+    Eigen::DSizes<Eigen::DenseIndex, 2> gap_slice_offset({0, 0});
+    Eigen::DSizes<Eigen::DenseIndex, 2> out_slice_offset({0, 0});
+    Eigen::DSizes<Eigen::DenseIndex, 2> out_slice_extents({1, num_col});
+    Eigen::DSizes<Eigen::DenseIndex, 1> out_slice_vec_shape(num_col);
+#if !defined(EIGEN_HAS_INDEX_LIST)
+    Eigen::DSizes<Eigen::DenseIndex, 1> dims_to_reduce({0});
+#else
+    Eigen::IndexList<Eigen::type2index<0>> dims_to_reduce;
+#endif
+    Index start = 0, end = 1;
+
+    Index uninitialized_index = 0;  // Index from which the output is not set.
+    Index out_index = internal::SubtleMustCopy(segment_vec(start));
+
+    auto device = context->eigen_device<Device>();
+    while (end <= num_indices) {
+      // We initialize next_index to 0 to avoid "warning: 'next_index' may be
+      // used uninitialized in this function" in the Mac build (since the
+      // compiler isn't smart enough to realize the code is safe).
+      Index next_index = 0;
+      if (end < num_indices) {
+        next_index = internal::SubtleMustCopy(segment_vec(end));
+        if (out_index == next_index) {
+          ++end;
+          continue;
+        }
+        // We have a new segment here.  Verify that the segment ids are growing.
+        OP_REQUIRES(context, out_index < next_index,
+                    errors::InvalidArgument("segment ids are not increasing"));
+      }
+
+      // Process segment [start, end)
+      OP_REQUIRES(
+          context, FastBoundsCheck(out_index, output_rows),
+          errors::InvalidArgument(
+              "Segment id ", out_index, " out of range [0, ", output_rows,
+              "), possibly because 'segment_ids' input is not sorted."));
+
+      // If there is a gap between two indices, we need to set that gap to the
+      // default value.
+      if (out_index > uninitialized_index) {
+        gap_slice_offset[0] = uninitialized_index;
+        Eigen::DSizes<Eigen::DenseIndex, 2> gap_slice_shape(
+            out_index - uninitialized_index, num_col);
+        auto output_slice = output_flat.slice(gap_slice_offset, gap_slice_shape);
+        output_slice.device(device) = output_slice.constant(T(default_value));
+      }
+
+      in_slice_offset[0] = start;
+      out_slice_offset[0] = out_index;
+      auto out_slice = output_flat.slice(out_slice_offset, out_slice_extents);
+      if (start == end - 1) {
+        // out_slice_extents is used intentionally here
+        out_slice.device(device) =
+          input_flat.slice(in_slice_offset, out_slice_extents);
+      }
+      else {
+        in_slice_extents[0] = end - start;
+        auto in_slice = input_flat.slice(in_slice_offset, in_slice_extents);
+        out_slice.reshape(out_slice_vec_shape).device(device) =
+          in_slice.reduce(dims_to_reduce, Reducer());
+      }
+      if (end >= num_indices)
+        break;
+      start = end;
+      ++end;
+      uninitialized_index = out_index + 1;
+      out_index = next_index;
+    }
+  }
+};
+
+#endif  // TENSORFLOW_USE_SYCL
 
 #define REGISTER_CPU_KERNEL_SEGMENT(name, functor, type, index_type, \
                                     default_value)                   \
@@ -359,6 +479,45 @@ TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_SORTED_KERNELS_ALL);
 #undef REGISTER_GPU_SORTED_KERNELS_ALL
 #endif  // GOOGLE_CUDA
 
+#ifdef TENSORFLOW_USE_SYCL
+#define REGISTER_SYCL_KERNEL_SEGMENT(name, functor, type, index_type, \
+                                     default_value)                   \
+  REGISTER_KERNEL_BUILDER(                                            \
+      Name(name)                                                      \
+          .Device(DEVICE_SYCL)                                        \
+          .TypeConstraint<type>("T")                                  \
+          .TypeConstraint<index_type>("Tindices")                     \
+          .HostMemory("segment_ids"),                                 \
+      SegmentReductionSYCLOp<SYCLDevice, type, index_type, functor,   \
+                             default_value>)
+
+#define REGISTER_REAL_SYCL_KERNELS(type, index_type)               \
+  REGISTER_SYCL_KERNEL_SEGMENT("SegmentSum",                       \
+                               Eigen::internal::SumReducer<type>,  \
+                               type, index_type, 0);               \
+  REGISTER_SYCL_KERNEL_SEGMENT("SegmentMean",                      \
+                               Eigen::internal::MeanReducer<type>, \
+                               type, index_type, 0);               \
+  REGISTER_SYCL_KERNEL_SEGMENT("SegmentProd",                      \
+                               Eigen::internal::ProdReducer<type>, \
+                               type, index_type, 1);               \
+  REGISTER_SYCL_KERNEL_SEGMENT("SegmentMin",                       \
+                               Eigen::internal::MinReducer<type>,  \
+                               type, index_type, 0);               \
+  REGISTER_SYCL_KERNEL_SEGMENT("SegmentMax",                       \
+                               Eigen::internal::MaxReducer<type>,  \
+                               type, index_type, 0)
+
+#define REGISTER_REAL_SYCL_KERNELS_ALL(type) \
+  REGISTER_REAL_SYCL_KERNELS(type, int32);   \
+  REGISTER_REAL_SYCL_KERNELS(type, int64)
+
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_REAL_SYCL_KERNELS_ALL);
+#undef REGISTER_SYCL_KERNEL_SEGMENT
+#undef REGISTER_REAL_SYCL_KERNELS
+#undef REGISTER_REAL_SYCL_KERNELS_ALL
+#endif  // TENSORFLOW_USE_SYCL
+
 // ____________________________________________________________________________
 // Unsorted segment reduction ops.
 
@@ -371,15 +530,17 @@ struct UnsortedSegmentFunctor<CPUDevice, T, Index, InitialValueF, ReductionF> {
   void operator()(OpKernelContext* ctx, const Index num_segments,
                   const TensorShape& segment_ids_shape,
                   typename TTypes<Index>::ConstFlat segment_ids,
-                  const Index data_size, const T* data,
+                  typename TTypes<T>::ConstFlat data_flat,
                   typename TTypes<T, 2>::Tensor output) {
     output.setConstant(InitialValueF()());
+    const Index data_size = data_flat.size();
     if (data_size == 0) {
       return;
     }
     const int64 N = segment_ids.dimension(0);
     ReductionF reduction;
-    auto data_flat = typename TTypes<T, 2>::ConstTensor(data, N, data_size / N);
+    const T* data = data_flat.data();
+    auto data_mat = typename TTypes<T>::ConstMatrix(data, N, data_size / N);
     for (int64 i = 0; i < N; ++i) {
       Index j = internal::SubtleMustCopy(segment_ids(i));
       if (j < 0) {
@@ -389,7 +550,7 @@ struct UnsortedSegmentFunctor<CPUDevice, T, Index, InitialValueF, ReductionF> {
                   errors::InvalidArgument(
                       "segment_ids", SliceDebugString(segment_ids_shape, i),
                       " = ", j, " is out of range [0, ", num_segments, ")"));
-      reduction(data_flat.template chip<0>(i), output.template chip<0>(j));
+      reduction(data_mat.template chip<0>(i), output.template chip<0>(j));
     }
   }
 };
@@ -432,54 +593,57 @@ struct ProdOp {
 
 #ifdef TENSORFLOW_USE_SYCL
 // reduction functors
-template <typename T>
 struct SumOpSycl {
-  void operator()(const SYCLDevice& d, const constMatrixChip<T> data,
-                  MatrixChip<T> output) {
+  template <typename TensorData, typename TensorOutput>
+  void operator()(const SYCLDevice& d, const TensorData data,
+                  TensorOutput output) {
     output.device(d) += data;
   }
 };
 
-template <typename T>
 struct MaxOpSycl {
-  void operator()(const SYCLDevice& d, const constMatrixChip<T> data,
-                  MatrixChip<T> output) {
+  template <typename TensorData, typename TensorOutput>
+  void operator()(const SYCLDevice& d, const TensorData data,
+                  TensorOutput output) {
     output.device(d) = data.cwiseMax(output);
   }
 };
 
-template <typename T>
 struct MinOpSycl {
-  void operator()(const SYCLDevice& d, const constMatrixChip<T> data,
-                  MatrixChip<T> output) {
+  template <typename TensorData, typename TensorOutput>
+  void operator()(const SYCLDevice& d, const TensorData data,
+                  TensorOutput output) {
     output.device(d) = data.cwiseMin(output);
   }
 };
 
-template <typename T>
 struct ProdOpSycl {
-  void operator()(const SYCLDevice& d, const constMatrixChip<T> data,
-                  MatrixChip<T> output) {
+  template <typename TensorData, typename TensorOutput>
+  void operator()(const SYCLDevice& d, const TensorData data,
+                  TensorOutput output) {
     output.device(d) = output * data;
   }
 };
 
 template <typename T, typename Index, typename InitialValueF,
           typename ReductionF>
-struct UnsortedSegmentFunctor<SYCLDevice, T, Index, InitialValueF, ReductionF> {
+struct UnsortedSegmentFunctor<SYCLDevice, T, Index, InitialValueF,
+                              ReductionF> {
   void operator()(OpKernelContext* ctx, const Index num_segments,
                   const TensorShape& segment_ids_shape,
                   typename TTypes<Index>::ConstFlat segment_ids,
-                  const Index data_size, const T* data,
+                  typename TTypes<T>::ConstFlat data_flat,
                   typename TTypes<T, 2>::Tensor output) {
     SYCLDevice d = ctx->eigen_device<SYCLDevice>();
     output.device(d) = output.constant(T(InitialValueF()()));
+    const Index data_size = data_flat.size();
     if (data_size == 0) {
       return;
     }
-    const int64 N = segment_ids.dimension(0);
+    const Index N = segment_ids.dimension(0);
     ReductionF reduction;
-    auto data_flat = typename TTypes<T, 2>::ConstTensor(data, N, data_size / N);
+    Eigen::DSizes<Index, 2> data_shape({N, data_size / N});
+    auto data_mat = data_flat.reshape(data_shape);
     for (int64 i = 0; i < N; ++i) {
       Index j = internal::SubtleMustCopy(segment_ids(i));
       if (j < 0) {
@@ -489,7 +653,7 @@ struct UnsortedSegmentFunctor<SYCLDevice, T, Index, InitialValueF, ReductionF> {
                   errors::InvalidArgument(
                       "segment_ids", SliceDebugString(segment_ids_shape, i),
                       " = ", j, " is out of range [0, ", num_segments, ")"));
-      reduction(d, data_flat.template chip<0>(i), output.template chip<0>(j));
+      reduction(d, data_mat.template chip<0>(i), output.template chip<0>(j));
     }
   }
 };
@@ -557,9 +721,9 @@ class UnsortedSegmentReductionOp : public OpKernel {
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
     auto output_flat = output->flat_outer_dims<T>();
-    auto data_ptr = data.template flat<T>().data();
+    auto data_flat = data.template flat<T>();
     reduction_functor_(context, output_rows, segment_ids.shape(), segment_flat,
-                       data.NumElements(), data_ptr, output_flat);
+                       data_flat, output_flat);
   }
 
  protected:
@@ -691,41 +855,30 @@ TF_CALL_complex128(REGISTER_SUM_GPU_UNSORTED_KERNELS_ALL);
                                           initial_value_functor,             \
                                           reduction_kernel_functor> >)
 
-// sum is the only op that supports all input types currently
 #define REGISTER_REAL_SYCL_UNSORTED_KERNELS(type, index_type)                  \
+  REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT("UnsortedSegmentSum", type, index_type, \
+                                      functor::Zero<type>,                     \
+                                      functor::SumOpSycl);                     \
   REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT("UnsortedSegmentMax", type, index_type, \
                                       functor::Lowest<type>,                   \
-                                      functor::MaxOpSycl<type>);               \
+                                      functor::MaxOpSycl);                     \
   REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT("UnsortedSegmentMin", type, index_type, \
                                       functor::Highest<type>,                  \
-                                      functor::MinOpSycl<type>);               \
+                                      functor::MinOpSycl);                     \
   REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT("UnsortedSegmentProd", type, index_type,\
                                       functor::One<type>,                      \
-                                      functor::ProdOpSycl<type>);
-
-#define REGISTER_SUM_SYCL_UNSORTED_KERNELS(type, index_type)                  \
-  REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT("UnsortedSegmentSum", type, index_type,\
-                                      functor::Zero<type>,                    \
-                                      functor::SumOpSycl<type>);
+                                      functor::ProdOpSycl);
 
 #define REGISTER_REAL_SYCL_UNSORTED_KERNELS_ALL(type) \
   REGISTER_REAL_SYCL_UNSORTED_KERNELS(type, int32);   \
   REGISTER_REAL_SYCL_UNSORTED_KERNELS(type, int64);
 
-#define REGISTER_SUM_SYCL_UNSORTED_KERNELS_ALL(type) \
-  REGISTER_SUM_SYCL_UNSORTED_KERNELS(type, int32);   \
-  REGISTER_SUM_SYCL_UNSORTED_KERNELS(type, int64);
-
 TF_CALL_SYCL_NUMBER_TYPES(REGISTER_REAL_SYCL_UNSORTED_KERNELS_ALL);
 TF_CALL_int32(REGISTER_REAL_SYCL_UNSORTED_KERNELS_ALL);
-TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SUM_SYCL_UNSORTED_KERNELS_ALL);
-TF_CALL_int32(REGISTER_SUM_SYCL_UNSORTED_KERNELS_ALL);
 
 #undef REGISTER_SYCL_KERNEL_UNSORTEDSEGMENT
 #undef REGISTER_REAL_SYCL_UNSORTED_KERNELS
-#undef REGISTER_SUM_SYCL_UNSORTED_KERNELS
 #undef REGISTER_REAL_SYCL_UNSORTED_KERNELS_ALL
-#undef REGISTER_SUM_SYCL_UNSORTED_KERNELS_ALL
 #endif  // TENSORFLOW_USE_SYCL
 
 // ____________________________________________________________________________
@@ -802,7 +955,12 @@ class SparseSegmentReductionOpBase : public OpKernel {
     // we need to explicitly set missing indices to the default value.
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
-    if (num_indices == 0) return;
+    if (num_indices == 0) {
+      if (output_rows > 0) {
+        output->flat_outer_dims<T>().setConstant(default_value_);
+      }
+      return;
+    }
     OP_REQUIRES(context, output_rows > 0,
                 errors::InvalidArgument("segment ids must be >= 0"));
     auto output_flat = output->flat_outer_dims<T>();

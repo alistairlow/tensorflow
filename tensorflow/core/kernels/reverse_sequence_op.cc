@@ -39,6 +39,9 @@ namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
+#ifdef TENSORFLOW_USE_SYCL
+typedef Eigen::SyclDevice SYCLDevice;
+#endif  // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename Tlen>
 void CheckErrors(OpKernelContext* context, int batch_dim, int seq_dim) {
@@ -105,6 +108,20 @@ void CheckErrors<GPUDevice, int64>(OpKernelContext* context, int batch_dim,
                                    int seq_dim) {
   CheckErrorsGPU(context, batch_dim, seq_dim);
 }
+
+#ifdef TENSORFLOW_USE_SYCL
+template <>
+void CheckErrors<SYCLDevice, int32>(OpKernelContext* context, int batch_dim,
+                                    int seq_dim) {
+  CheckErrorsGPU(context, batch_dim, seq_dim);
+}
+
+template <>
+void CheckErrors<SYCLDevice, int64>(OpKernelContext* context, int batch_dim,
+                                    int seq_dim) {
+  CheckErrorsGPU(context, batch_dim, seq_dim);
+}
+#endif  // TENSORFLOW_USE_SYCL
 
 template <typename Device, typename T, typename Tlen>
 class ReverseSequenceOp : public OpKernel {
@@ -222,5 +239,27 @@ TF_CALL_bool(REGISTER_REVERSE_SEQUENCE_GPU_LEN);
 #undef REGISTER_REVERSE_SEQUENCE_GPU
 
 #endif  // GOOGLE_CUDA
+
+#ifdef TENSORFLOW_USE_SYCL
+
+#define REGISTER_REVERSE_SEQUENCE_SYCL(type, len_type)           \
+  REGISTER_KERNEL_BUILDER(Name("ReverseSequence")                \
+                              .Device(DEVICE_SYCL)               \
+                              .TypeConstraint<type>("T")         \
+                              .TypeConstraint<len_type>("Tlen"), \
+                          ReverseSequenceOp<SYCLDevice, type, len_type>);
+
+#define REGISTER_REVERSE_SEQUENCE_SYCL_LEN(type) \
+  REGISTER_REVERSE_SEQUENCE_SYCL(type, int32);   \
+  REGISTER_REVERSE_SEQUENCE_SYCL(type, int64);
+
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_REVERSE_SEQUENCE_SYCL_LEN);
+TF_CALL_bool(REGISTER_REVERSE_SEQUENCE_SYCL_LEN);
+TF_CALL_INTEGRAL_TYPES(REGISTER_REVERSE_SEQUENCE_SYCL_LEN);
+
+#undef REGISTER_REVERSE_SEQUENCE_SYCL
+#undef REGISTER_REVERSE_SEQUENCE_SYCL_LEN
+
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

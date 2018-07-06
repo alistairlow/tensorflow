@@ -19,14 +19,13 @@ namespace tensorflow {
 REGISTER8(BinaryOp, CPU, "BitwiseXor", functor::bitwise_xor, int8, int16, int32,
           int64, uint8, uint16, uint32, uint64);
 
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER8(BinaryOp, SYCL, "BitwiseXor", functor::bitwise_xor, int8, int16,
-          int32, int64, uint8, uint16, uint32, uint64);
-#endif  // TENSORFLOW_USE_SYCL
-
 #if GOOGLE_CUDA
 REGISTER8(BinaryOp, GPU, "BitwiseXor", functor::bitwise_xor, int8, int16, int32,
           int64, uint8, uint16, uint32, uint64);
 #endif  // GOOGLE_CUDA
 
+#ifdef TENSORFLOW_USE_SYCL
+REGISTER8(BinaryOp, SYCL, "BitwiseXor", functor::bitwise_xor, int8, int16,
+          int32, int64, uint8, uint16, uint32, uint64);
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

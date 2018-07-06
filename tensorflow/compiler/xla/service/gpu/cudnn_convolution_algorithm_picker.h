@@ -33,9 +33,8 @@ class CudnnConvolutionAlgorithmPicker : public HloPassInterface {
   // If the `allocator` parameter is not null, we will use it to allocate temp
   // memory while timing the various convolution algorithms.  If it's null,
   // we'll use the default allocator on the StreamExecutor.
-  CudnnConvolutionAlgorithmPicker(
-      perftools::gputools::StreamExecutor* stream_exec,
-      DeviceMemoryAllocator* allocator)
+  CudnnConvolutionAlgorithmPicker(se::StreamExecutor* stream_exec,
+                                  DeviceMemoryAllocator* allocator)
       : stream_exec_(stream_exec), allocator_(allocator) {}
 
   tensorflow::StringPiece name() const override {
@@ -47,12 +46,12 @@ class CudnnConvolutionAlgorithmPicker : public HloPassInterface {
  private:
   StatusOr<bool> RunOnComputation(HloComputation* computation);
   StatusOr<bool> RunOnInstruction(HloInstruction* instr);
-  tensorflow::gtl::optional<std::pair<int64, int64>> PickBestAlgorithm(
+  tensorflow::gtl::optional<std::tuple<int64, bool, int64>> PickBestAlgorithm(
       CudnnConvKind kind, const Shape& input_shape, const Shape& filter_shape,
       const Shape& output_shape, const Window& window,
       const ConvolutionDimensionNumbers& dnums, HloInstruction* instr);
 
-  perftools::gputools::StreamExecutor* stream_exec_;  // never null
+  se::StreamExecutor* stream_exec_;                   // never null
   DeviceMemoryAllocator* allocator_;                  // may be null
 };
 

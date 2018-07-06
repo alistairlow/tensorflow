@@ -24,8 +24,11 @@ limitations under the License.
 #include "cuda/include/cuda_runtime_api.h"
 
 namespace tensorflow {
-namespace tensorrt {
 static ::tensorflow::tensorrt::Logger logger;
+using IRuntime = nvinfer1::IRuntime;
+using Dims = nvinfer1::Dims;
+
+namespace tensorrt {
 
 TRTEngineOp::TRTEngineOp(OpKernelConstruction* context) : OpKernel(context) {
   // read serialized_engine
@@ -40,10 +43,21 @@ TRTEngineOp::TRTEngineOp(OpKernelConstruction* context) : OpKernel(context) {
   // TODO(samikama) runtime should be taken from a resourcemanager as well.
   // Only engine should be in the op and context and runtime should be taken
   // from resourcemanager
-  nvinfer1::IRuntime* infer = nvinfer1::createInferRuntime(logger);
+  // TODO(jie): cudaSetDevice make sure trt engine is allocated on the same
+  // gpu where the input/output is also located.
+  int gpu_id = context->device()->tensorflow_gpu_device_info()->gpu_id;
+  cudaSetDevice(gpu_id);
+  int device;
+  cudaGetDevice(&device);
+  if (gpu_id != device) LOG(FATAL) << "set device failed!";
+
+  // TODO(samikama) runtime should be taken from a resourcemanager as well.
+  // Only engine should be in the op and context and runtime should be taken
+  // from resourcemanager
+
+  IRuntime* infer = nvinfer1::createInferRuntime(logger);
   trt_engine_ptr_.reset(infer->deserializeCudaEngine(
       serialized_engine.c_str(), serialized_engine.size(), nullptr));
-
   trt_execution_context_ptr_.reset(trt_engine_ptr_->createExecutionContext());
   // Runtime is safe to delete after engine creation
   infer->destroy();
@@ -55,7 +69,6 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
 
   size_t binding_index;
   int num_batch = 0;
-  bool valid = true;
   for (int i = 0; i < context->num_inputs(); i++) {
     // Grab the input tensor
     binding_index = trt_engine_ptr_->getBindingIndex(input_nodes_[i].c_str());
@@ -64,11 +77,16 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
     const TensorShape& input_shape = input_tensor.shape();
     if (i == 0) {
       num_batch = input_shape.dim_size(0);
+      if (num_batch > trt_engine_ptr_->getMaxBatchSize()) {
+        LOG(FATAL) << "input tensor batch larger than max_batch_size: "
+                   << trt_engine_ptr_->getMaxBatchSize();
+      }
     } else if (num_batch != input_shape.dim_size(0)) {
-      valid = false;
+      LOG(FATAL) << "input data inconsistent batch size";
       break;
     }
-    switch (trt_engine_ptr_->getBindingDataType(binding_index)) {
+    auto dtype = trt_engine_ptr_->getBindingDataType(binding_index);
+    switch (dtype) {
       case nvinfer1::DataType::kFLOAT:
         buffers[binding_index] = (void*)(input_tensor.flat<float>().data());
         break;
@@ -78,11 +96,11 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
       case nvinfer1::DataType::kINT8:
         LOG(FATAL) << "int8 is not supported yet!";
         break;
+      default:
+        LOG(FATAL) << "Unknown data type: " << int(dtype);
+        break;
     }
   }
-
-  // Might want a different way to inform the user of batch size inconsistency
-  if (!valid) LOG(WARNING) << "input data inconsistent batch size";
 
   for (int i = 0; i < static_cast<int>(output_nodes_.size()); i++) {
     // This is bad that we have to reallocate output buffer every run.
@@ -106,7 +124,8 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
 
     OP_REQUIRES_OK(context,
                    context->allocate_output(i, output_shape, &output_tensor));
-    switch (trt_engine_ptr_->getBindingDataType(binding_index)) {
+    auto dtype = trt_engine_ptr_->getBindingDataType(binding_index);
+    switch (dtype) {
       case nvinfer1::DataType::kFLOAT:
         buffers[binding_index] =
             reinterpret_cast<void*>(output_tensor->flat<float>().data());
@@ -117,6 +136,9 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
       case nvinfer1::DataType::kINT8:
         LOG(FATAL) << "int8 is not supported yet!";
         break;
+      default:
+        LOG(FATAL) << "Unknown data type: " << int(dtype);
+        break;
     }
   }
   // copied from cuda_kernel_helper since it seems only valid in *.cu.cc files
@@ -126,9 +148,11 @@ void TRTEngineOp::Compute(OpKernelContext* context) {
                                                 ->implementation()
                                                 ->CudaStreamMemberHack()));
 
-  // execution handled by TF since we are getting stream from TF.
-  // it is safe for CPU pointer array (buffers) to go out of scope after enqueue
-  trt_execution_context_ptr_->enqueue(num_batch, &buffers[0], *stream, nullptr);
+  // TODO(jie): trt enqueue does not return error
+  auto ret = trt_execution_context_ptr_->enqueue(num_batch, &buffers[0],
+                                                 *stream, nullptr);
+  VLOG(2) << "enqueue returns: " << ret;
+  // sync should be done by TF.
 }
 
 REGISTER_KERNEL_BUILDER(Name("TRTEngineOp").Device(DEVICE_GPU), TRTEngineOp);

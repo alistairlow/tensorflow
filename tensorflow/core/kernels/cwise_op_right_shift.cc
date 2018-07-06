@@ -19,24 +19,13 @@ namespace tensorflow {
 REGISTER8(BinaryOp, CPU, "RightShift", functor::right_shift, int8, int16, int32,
           int64, uint8, uint16, uint32, uint64);
 
-#if TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL_KERNEL(TYPE) \
-  REGISTER(BinaryOp, SYCL, "RightShift", functor::right_shift, TYPE)
-TF_CALL_int8(REGISTER_SYCL_KERNEL);
-TF_CALL_int16(REGISTER_SYCL_KERNEL);
-TF_CALL_int32(REGISTER_SYCL_KERNEL);
-TF_CALL_int64(REGISTER_SYCL_KERNEL);
-TF_CALL_uint8(REGISTER_SYCL_KERNEL);
-TF_CALL_uint16(REGISTER_SYCL_KERNEL);
-TF_CALL_uint32(REGISTER_SYCL_KERNEL);
-TF_CALL_uint64(REGISTER_SYCL_KERNEL);
-#undef REGISTER_SYCL_KERNEL
-
-#endif  // TENSORFLOW_USE_SYCL
-
 #if GOOGLE_CUDA
 REGISTER8(BinaryOp, GPU, "RightShift", functor::right_shift, int8, int16, int32,
           int64, uint8, uint16, uint32, uint64);
 #endif  // GOOGLE_CUDA
 
+#if TENSORFLOW_USE_SYCL
+REGISTER8(BinaryOp, SYCL, "RightShift", functor::right_shift, int8, int16,
+          int32, int64, uint8, uint16, uint32, uint64);
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow

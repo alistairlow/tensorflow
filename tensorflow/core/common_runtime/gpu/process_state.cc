@@ -29,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/tracking_allocator.h"
+#include "tensorflow/core/lib/gtl/stl_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -145,7 +146,7 @@ Allocator* ProcessState::GetGPUAllocator(const GPUOptions& options,
 
     // If there are any pending AllocVisitors for this bus, add
     // them now.
-    gpu::StreamExecutor* se =
+    se::StreamExecutor* se =
         GpuIdUtil::ExecutorForTfGpuId(tf_gpu_id).ValueOrDie();
     int bus_id = se->GetDeviceDescription().numa_node();
     if (bus_id >= 0 && bus_id < static_cast<int64>(gpu_visitors_.size())) {
@@ -256,7 +257,7 @@ Allocator* ProcessState::GetCUDAHostAllocator(int numa_node) {
   // better source of information about which executor to use.  For
   // example, process_state could maybe save the first stream executor
   // it knows is valid.
-  gpu::StreamExecutor* se = nullptr;
+  se::StreamExecutor* se = nullptr;
   for (int i = 0; i < static_cast<int>(gpu_allocators_.size()); ++i) {
     if (gpu_allocators_[i] != nullptr) {
       se = GpuIdUtil::ExecutorForTfGpuId(TfGpuId(i)).ValueOrDie();
@@ -304,7 +305,7 @@ void ProcessState::AddGPUAllocVisitor(int bus_id, AllocVisitor visitor) {
 #if GOOGLE_CUDA
   mutex_lock lock(mu_);
   for (int i = 0; i < static_cast<int64>(gpu_allocators_.size()); ++i) {
-    gpu::StreamExecutor* se =
+    se::StreamExecutor* se =
         GpuIdUtil::ExecutorForTfGpuId(TfGpuId(i)).ValueOrDie();
     if (gpu_allocators_[i] &&
         (se->GetDeviceDescription().numa_node() + 1) == bus_id) {
@@ -316,6 +317,19 @@ void ProcessState::AddGPUAllocVisitor(int bus_id, AllocVisitor visitor) {
   }
   gpu_visitors_[bus_id].push_back(visitor);
 #endif  // GOOGLE_CUDA
+}
+
+void ProcessState::TestOnlyReset() {
+  mutex_lock lock(mu_);
+  gpu_device_enabled_ = false;
+  gpu_visitors_.clear();
+  mem_desc_map_.clear();
+  gtl::STLDeleteElements(&cpu_allocators_);
+  gtl::STLDeleteElements(&gpu_allocators_);
+  gtl::STLDeleteElements(&cuda_host_allocators_);
+  gtl::STLDeleteElements(&cpu_al_);
+  gtl::STLDeleteElements(&gpu_al_);
+  gtl::STLDeleteElements(&cuda_al_);
 }
 
 }  // namespace tensorflow

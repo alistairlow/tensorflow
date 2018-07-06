@@ -31,11 +31,6 @@ namespace functor {
 
 typedef Eigen::SyclDevice SYCLDevice;
 
-template <typename OUT, typename RHS>
-void Assign(const SYCLDevice& d, OUT out, RHS rhs) {
-  out.device(d) = rhs;
-}
-
 // Partial specialization of UnaryFunctor<Device=SYCLDevice, Functor>.
 template <typename Functor>
 struct UnaryFunctor<SYCLDevice, Functor> {
@@ -46,18 +41,19 @@ struct UnaryFunctor<SYCLDevice, Functor> {
 };
 
 // Partial specialization of BinaryFunctor<Device=SYCLDevice, Functor>.
+// SYCL cannot use the bool pointer to check for errors
 template <typename Functor, int NDIMS, bool has_errors>
 struct BinaryFunctor<SYCLDevice, Functor, NDIMS, has_errors> {
   void operator()(const SYCLDevice& d, typename Functor::tout_type out,
                   typename Functor::tin_type in0,
-                  typename Functor::tin_type in1, bool* error) {
+                  typename Functor::tin_type in1, bool*) {
     To32Bit(out).device(d) =
         To32Bit(in0).binaryExpr(To32Bit(in1), typename Functor::func());
   }
 
   void Left(const SYCLDevice& d, typename Functor::tout_type out,
             typename Functor::tscalar_type scalar,
-            typename Functor::tin_type in, bool* error) {
+            typename Functor::tin_type in, bool*) {
     typedef typename Functor::func Binary;
     constexpr int NumDims = Functor::tin_type::NumDimensions;
     static_assert(NumDims == 1, "Unexpected size");
@@ -69,7 +65,7 @@ struct BinaryFunctor<SYCLDevice, Functor, NDIMS, has_errors> {
 
   void Right(const SYCLDevice& d, typename Functor::tout_type out,
              typename Functor::tin_type in,
-             typename Functor::tscalar_type scalar, bool* error) {
+             typename Functor::tscalar_type scalar, bool*) {
     typedef typename Functor::func Binary;
     constexpr int NumDims = Functor::tin_type::NumDimensions;
     static_assert(NumDims == 1, "Unexpected size");
@@ -84,7 +80,7 @@ struct BinaryFunctor<SYCLDevice, Functor, NDIMS, has_errors> {
              typename Eigen::array<Eigen::DenseIndex, NDIMS> bcast0,
              typename TTypes<typename Functor::in_type, NDIMS>::ConstTensor in1,
              typename Eigen::array<Eigen::DenseIndex, NDIMS> bcast1,
-             bool* error) {
+             bool*) {
     typedef typename Functor::in_type T;
     typename Functor::func func;
     if ((NDIMS == 2) && Functor::use_bcast_optimization &&
@@ -106,6 +102,18 @@ struct BinaryFunctor<SYCLDevice, Functor, NDIMS, has_errors> {
         To32Bit(in1).broadcast(bcast1), func);
   }
 };
+
+// Partial specialization of ApproximateEqual<Device=SYCLDevice, T>.
+template <typename T>
+struct ApproximateEqual<SYCLDevice, T> {
+  void operator()(const SYCLDevice& d, typename TTypes<T>::ConstFlat x,
+                  typename TTypes<T>::ConstFlat y, T tolerance,
+                  typename TTypes<bool>::Flat z) {
+    auto diff = x - y;
+    z.device(d) = diff.abs() <= tolerance;
+  }
+};
+
 }  // end namespace functor
 }  // end namespace tensorflow
 

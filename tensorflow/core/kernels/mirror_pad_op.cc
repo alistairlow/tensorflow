@@ -148,6 +148,9 @@ class MirrorPadOp : public OpKernel {
 
 using CpuDevice = Eigen::ThreadPoolDevice;
 using GpuDevice = Eigen::GpuDevice;
+#ifdef TENSORFLOW_USE_SYCL
+using SYCLDevice = Eigen::SyclDevice;
+#endif  // TENSORFLOW_USE_SYCL
 
 namespace functor {
 // Forward declarations of the functor specializations defined in the sharded
@@ -173,6 +176,7 @@ namespace functor {
   DECLARE_CPU_SPEC(T, int64, 5);
 
 TF_CALL_POD_TYPES(DECLARE_CPU_SPECS);
+TF_CALL_string(DECLARE_CPU_SPECS);
 
 #undef DECLARE_CPU_SPEC
 #undef DECLARE_CPU_SPECS
@@ -194,6 +198,7 @@ TF_CALL_POD_TYPES(DECLARE_CPU_SPECS);
 
 // Note that we do register for bool type, but not in the gradient op.
 TF_CALL_POD_TYPES(REGISTER_KERNEL);
+TF_CALL_string(REGISTER_KERNEL);
 #undef REGISTER_KERNEL
 
 #if GOOGLE_CUDA
@@ -242,6 +247,53 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPECS);
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_KERNEL);
 #undef REGISTER_GPU_KERNEL
 #endif  // GOOGLE_CUDA
+
+#ifdef TENSORFLOW_USE_SYCL
+namespace functor {
+// Forward declarations of the functor specializations for SYCL.
+#define DECLARE_SYCL_SPEC(T, Tpaddings, i)                     \
+  template <>                                                  \
+  void MirrorPad<SYCLDevice, T, Tpaddings, i>::operator()(     \
+      const SYCLDevice&, typename TTypes<T, i, int32>::Tensor, \
+      typename TTypes<T, i, int32>::ConstTensor,               \
+      TTypes<Tpaddings>::ConstMatrix, int);                    \
+  extern template struct MirrorPad<SYCLDevice, T, Tpaddings, i>;
+
+#define DECLARE_SYCL_SPECS(T)     \
+  DECLARE_SYCL_SPEC(T, int32, 1); \
+  DECLARE_SYCL_SPEC(T, int32, 2); \
+  DECLARE_SYCL_SPEC(T, int32, 3); \
+  DECLARE_SYCL_SPEC(T, int32, 4); \
+  DECLARE_SYCL_SPEC(T, int32, 5); \
+  DECLARE_SYCL_SPEC(T, int64, 1); \
+  DECLARE_SYCL_SPEC(T, int64, 2); \
+  DECLARE_SYCL_SPEC(T, int64, 3); \
+  DECLARE_SYCL_SPEC(T, int64, 4); \
+  DECLARE_SYCL_SPEC(T, int64, 5);
+
+TF_CALL_SYCL_NUMBER_TYPES(DECLARE_SYCL_SPECS);
+#undef DECLARE_SYCL_SPECS
+#undef DECLARE_SYCL_SPEC
+}  // namespace functor
+
+// Registration of the SYCL implementations.
+#define REGISTER_SYCL_KERNEL(T)                                   \
+  REGISTER_KERNEL_BUILDER(Name("MirrorPad")                       \
+                              .Device(DEVICE_SYCL)                \
+                              .TypeConstraint<T>("T")             \
+                              .TypeConstraint<int32>("Tpaddings") \
+                              .HostMemory("paddings"),            \
+                          MirrorPadOp<SYCLDevice, T, int32>);     \
+  REGISTER_KERNEL_BUILDER(Name("MirrorPad")                       \
+                              .Device(DEVICE_SYCL)                \
+                              .TypeConstraint<T>("T")             \
+                              .TypeConstraint<int64>("Tpaddings") \
+                              .HostMemory("paddings"),            \
+                          MirrorPadOp<SYCLDevice, T, int64>);
+
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNEL);
+#undef REGISTER_SYCL_KERNEL
+#endif  // TENSORFLOW_USE_SYCL
 
 // Gradient op.
 template <typename Device, typename T, typename Tpaddings>
@@ -449,5 +501,53 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPECS);
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_KERNEL);
 #undef REGISTER_GPU_KERNEL
 #endif  // GOOGLE_CUDA
+
+#ifdef TENSORFLOW_USE_SYCL
+namespace functor {
+// Forward declarations of the functor specializations for SYCL.
+#define DECLARE_SYCL_SPEC(T, Tpaddings, k)                     \
+  template <>                                                  \
+  void MirrorPadGrad<SYCLDevice, T, Tpaddings, k>::operator()( \
+      const SYCLDevice&, typename TTypes<T, k, int32>::Tensor, \
+      typename TTypes<T, k, int32>::ConstTensor,               \
+      TTypes<Tpaddings>::ConstMatrix, int,                     \
+      typename TTypes<T, k, int32>::Tensor);                   \
+  extern template struct MirrorPadGrad<SYCLDevice, T, Tpaddings, k>;
+
+#define DECLARE_SYCL_SPECS(T)     \
+  DECLARE_SYCL_SPEC(T, int32, 1); \
+  DECLARE_SYCL_SPEC(T, int32, 2); \
+  DECLARE_SYCL_SPEC(T, int32, 3); \
+  DECLARE_SYCL_SPEC(T, int32, 4); \
+  DECLARE_SYCL_SPEC(T, int32, 5); \
+  DECLARE_SYCL_SPEC(T, int64, 1); \
+  DECLARE_SYCL_SPEC(T, int64, 2); \
+  DECLARE_SYCL_SPEC(T, int64, 3); \
+  DECLARE_SYCL_SPEC(T, int64, 4); \
+  DECLARE_SYCL_SPEC(T, int64, 5);
+
+TF_CALL_SYCL_NUMBER_TYPES(DECLARE_SYCL_SPECS);
+#undef DECLARE_SYCL_SPECS
+#undef DECLARE_SYCL_SPEC
+}  // namespace functor
+
+// Registration of the SYCL implementations.
+#define REGISTER_SYCL_KERNEL(T)                                   \
+  REGISTER_KERNEL_BUILDER(Name("MirrorPadGrad")                   \
+                              .Device(DEVICE_SYCL)                \
+                              .TypeConstraint<T>("T")             \
+                              .TypeConstraint<int32>("Tpaddings") \
+                              .HostMemory("paddings"),            \
+                          MirrorPadGradOp<SYCLDevice, T, int32>); \
+  REGISTER_KERNEL_BUILDER(Name("MirrorPadGrad")                   \
+                              .Device(DEVICE_SYCL)                \
+                              .TypeConstraint<T>("T")             \
+                              .TypeConstraint<int64>("Tpaddings") \
+                              .HostMemory("paddings"),            \
+                          MirrorPadGradOp<SYCLDevice, T, int64>);
+
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL_KERNEL);
+#undef REGISTER_SYCL_KERNEL
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

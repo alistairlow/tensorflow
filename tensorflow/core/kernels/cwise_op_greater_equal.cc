@@ -43,6 +43,7 @@ TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
 REGISTER4(BinaryOp, SYCL, "GreaterEqual", functor::greater_equal, int64, uint8,
           int8, int16);
 
+// A special SYCL kernel for int32.
 REGISTER_KERNEL_BUILDER(Name("GreaterEqual")
                             .Device(DEVICE_SYCL)
                             .HostMemory("x")

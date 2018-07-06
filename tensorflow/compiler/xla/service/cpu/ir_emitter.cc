@@ -93,8 +93,6 @@ IrEmitter::IrEmitter(
       computation_to_profile_idx_(std::move(computation_to_profile_idx)),
       alias_analysis_(hlo_module, assignment, &llvm_module->getContext()),
       hlo_module_config_(hlo_module.config()),
-      parallel_cpu_backend_(
-          options::CpuParallelBackendRequested(hlo_module_config_)),
       is_top_level_computation_(false),
       target_machine_features_(target_machine),
       external_constant_pool_(external_constant_pool) {
@@ -438,12 +436,14 @@ Status IrEmitter::EmitXfeedTransfer(XfeedKind kind, const Shape& shape,
 
   if (kind == XfeedKind::kInfeed) {
     // Copy to the program buffer address from the acquired buffer.
-    ir_builder_.CreateMemCpy(program_buffer_address, acquired_pointer,
-                             length_32, 1);
+    ir_builder_.CreateMemCpy(program_buffer_address, /*DstAlign=*/1,
+                             acquired_pointer,
+                             /*SrcAlign=*/1, length_32);
   } else {
     // Outfeed -- copy from the in-program address to the acquired buffer.
-    ir_builder_.CreateMemCpy(acquired_pointer, program_buffer_address,
-                             length_32, 1);
+    ir_builder_.CreateMemCpy(acquired_pointer, /*DstAlign=*/1,
+                             program_buffer_address,
+                             /*SrcAlign=*/1, length_32);
   }
 
   ir_builder_.CreateCall(release_func,
@@ -801,7 +801,7 @@ Status IrEmitter::HandleDot(HloInstruction* dot) {
   auto rhs = dot->operand(1);
   TF_RETURN_IF_ERROR(ElementTypesSameAndSupported(
       /*instruction=*/*dot, /*operands=*/{lhs, rhs},
-      /*supported_types=*/{F32, F64, C64}));
+      /*supported_types=*/{F16, F32, F64, C64}));
   const DotDimensionNumbers& dnums = dot->dot_dimension_numbers();
   if (dnums.lhs_batch_dimensions_size() > 0 ||
       dnums.rhs_batch_dimensions_size() > 0) {
@@ -849,11 +849,13 @@ Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
   const auto& window = convolution->window();
   TF_RETURN_IF_ERROR(ElementTypesSameAndSupported(
       /*instruction=*/*convolution, /*operands=*/{lhs, rhs},
-      /*supported_types=*/{F32, C64}));
+      /*supported_types=*/{F16, F32, C64}));
 
   const ConvolutionDimensionNumbers& dnums =
       convolution->convolution_dimension_numbers();
 
+  // TODO(tonywy): Add PotentiallyImplementedAsMKLCovolution to support
+  // different data layouts.
   if (PotentiallyImplementedAsEigenConvolution(*convolution)) {
     const Shape& lhs_shape = lhs->shape();
     const Shape& rhs_shape = rhs->shape();
@@ -928,25 +930,40 @@ Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
       int64 rhs_col_dilation =
           one_dim_convolution ? 1 : window.dimensions(1).window_dilation();
 
-      // Args have been computed, make the call.
-      llvm::Type* float_ptr_type = ir_builder_.getFloatTy()->getPointerTo();
+      PrimitiveType primitive_type = lhs->shape().element_type();
+      llvm::Type* ir_ptr_type = primitive_type == F16
+                                    ? ir_builder_.getHalfTy()->getPointerTo()
+                                    : ir_builder_.getFloatTy()->getPointerTo();
       llvm::Type* int64_type = ir_builder_.getInt64Ty();
       llvm::Type* int8_ptr_type = ir_builder_.getInt8Ty()->getPointerTo();
       llvm::FunctionType* conv_type = llvm::FunctionType::get(
           ir_builder_.getVoidTy(),
-          {int8_ptr_type, float_ptr_type, float_ptr_type, float_ptr_type,
-           int64_type,    int64_type,     int64_type,     int64_type,
-           int64_type,    int64_type,     int64_type,     int64_type,
-           int64_type,    int64_type,     int64_type,     int64_type,
-           int64_type,    int64_type,     int64_type,     int64_type,
-           int64_type,    int64_type,     int64_type,     int64_type},
+          {int8_ptr_type, ir_ptr_type, ir_ptr_type, ir_ptr_type, int64_type,
+           int64_type,    int64_type,  int64_type,  int64_type,  int64_type,
+           int64_type,    int64_type,  int64_type,  int64_type,  int64_type,
+           int64_type,    int64_type,  int64_type,  int64_type,  int64_type,
+           int64_type,    int64_type,  int64_type,  int64_type},
           /*isVarArg=*/false);
-      bool multi_threaded_eigen =
+      bool multi_threaded =
           hlo_module_config_.debug_options().xla_cpu_multi_thread_eigen();
+      bool use_mkl_dnn =
+          hlo_module_config_.debug_options().xla_cpu_use_mkl_dnn();
+
+      // TODO(b/78639006) Singlethread MKL conv2d is not implemented due to the
+      // potential race condition by setting the omp_num_threads.
       const char* fn_name =
-          (multi_threaded_eigen
-               ? runtime::kEigenConvF32SymbolName
-               : runtime::kEigenSingleThreadedConvF32SymbolName);
+          primitive_type == F16
+              ? (multi_threaded
+                     ? runtime::kEigenConvF16SymbolName
+                     : runtime::kEigenSingleThreadedConvF16SymbolName)
+              : (multi_threaded
+                     ? (use_mkl_dnn ? runtime::kMKLConvF32SymbolName
+                                    : runtime::kEigenConvF32SymbolName)
+                     : runtime::kEigenSingleThreadedConvF32SymbolName);
+      if (!multi_threaded && use_mkl_dnn) {
+        LOG(WARNING) << "Using Eigen instead of MKL-DNN for single-threaded "
+                        "conv2d function.";
+      }
       llvm::Function* conv_func = llvm::cast<llvm::Function>(
           module_->getOrInsertFunction(fn_name, conv_type));
       conv_func->setCallingConv(llvm::CallingConv::C);
@@ -956,9 +973,9 @@ Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
           conv_func, {
                          GetExecutableRunOptionsArgument(),
                          ir_builder_.CreateBitCast(
-                             GetEmittedValueFor(convolution), float_ptr_type),
-                         ir_builder_.CreateBitCast(lhs_address, float_ptr_type),
-                         ir_builder_.CreateBitCast(rhs_address, float_ptr_type),
+                             GetEmittedValueFor(convolution), ir_ptr_type),
+                         ir_builder_.CreateBitCast(lhs_address, ir_ptr_type),
+                         ir_builder_.CreateBitCast(rhs_address, ir_ptr_type),
                          ir_builder_.getInt64(input_batch),
                          ir_builder_.getInt64(input_rows),
                          ir_builder_.getInt64(input_cols),
@@ -2069,7 +2086,7 @@ Status IrEmitter::HandleFusion(HloInstruction* fusion) {
 
     TF_RETURN_IF_ERROR(ElementTypesSameAndSupported(
         /*instruction=*/*root, /*operands=*/{lhs, rhs},
-        /*supported_types=*/{F32}));
+        /*supported_types=*/{F16, F32, F64}));
 
     llvm_ir::IrArray lhs_array(GetIrArrayFor(lhs));
     llvm_ir::IrArray rhs_array(GetIrArrayFor(rhs));
@@ -2156,8 +2173,7 @@ Status IrEmitter::HandleCall(HloInstruction* call) {
 
   TF_RETURN_IF_ERROR(EmitTargetAddressForOp(call));
 
-  if (!computation->root_instruction()->outer_dimension_partitions().empty() &&
-      !parallel_cpu_backend_) {
+  if (!computation->root_instruction()->outer_dimension_partitions().empty()) {
     // ParallelTaskAssignment assigned partitions, emit call to
     // ParallelForkJoin.
     std::vector<llvm::Value*> call_args = GetArrayFunctionCallArguments(
@@ -2436,7 +2452,8 @@ void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
     target_array.AnnotateLoadStoreInstructionWithMetadata(store_instruction);
   } else {
     auto* memcpy_instruction = ir_builder_.CreateMemCpy(
-        target, source, element_count * primitive_type_size, element_alignment);
+        target, /*DstAlign=*/element_alignment, source,
+        /*SrcAlign=*/element_alignment, element_count * primitive_type_size);
 
     // The memcpy does the load and the store internally.  The aliasing related
     // metadata has to reflect that.
@@ -2541,22 +2558,6 @@ Status IrEmitter::FinishVisit(HloInstruction* root) {
       profiling_state_.RecordCompleteComputation(&ir_builder_, prof_counter);
     }
   };
-
-  // For the parallel cpu backend, we record the total for each embedded
-  // computation callee with its caller kCall HLO.
-  if (parallel_cpu_backend_ && is_top_level_computation_) {
-    auto* computation = root->parent();
-    auto* entry_computation = computation->parent()->entry_computation();
-    if (computation != entry_computation) {
-      for (HloInstruction* instruction : entry_computation->instructions()) {
-        if (instruction->opcode() == HloOpcode::kCall &&
-            instruction->to_apply()->root_instruction() == root) {
-          record_complete_computation(GetProfileCounterFor(*instruction));
-          return Status::OK();
-        }
-      }
-    }
-  }
 
   // For the entry computation this increment is cumulative of embedded
   // computations since it includes cycles spent in computations invoked by
@@ -2900,7 +2901,8 @@ Status IrEmitter::EmitMemcpy(const HloInstruction& source,
   llvm::Value* destination_value = GetEmittedValueFor(&destination);
   int64 source_size = ByteSizeOf(source.shape());
   // TODO(b/63762267): Be more aggressive about specifying alignment.
-  ir_builder_.CreateMemCpy(destination_value, source_value, source_size, 1);
+  ir_builder_.CreateMemCpy(destination_value, /*DstAlign=*/1, source_value,
+                           /*SrcAlign=*/1, source_size);
   return Status::OK();
 }
 

@@ -190,4 +190,28 @@ TF_CALL_int64(REGISTER_ONE_HOT_GPU);
 
 #endif  // GOOGLE_CUDA
 
+#ifdef TENSORFLOW_USE_SYCL
+
+#define REGISTER_ONE_HOT_SYCL_INDEX(type, index_type)           \
+  REGISTER_KERNEL_BUILDER(Name("OneHot")                        \
+                              .Device(DEVICE_SYCL)              \
+                              .TypeConstraint<index_type>("TI") \
+                              .TypeConstraint<type>("T")        \
+                              .HostMemory("depth"),             \
+                          OneHotOp<SYCLDevice, type, index_type>);
+
+#define REGISTER_ONE_HOT_SYCL(type)         \
+  REGISTER_ONE_HOT_SYCL_INDEX(type, uint8); \
+  REGISTER_ONE_HOT_SYCL_INDEX(type, int32); \
+  REGISTER_ONE_HOT_SYCL_INDEX(type, int64)
+
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_ONE_HOT_SYCL);
+TF_CALL_int32(REGISTER_ONE_HOT_SYCL);
+TF_CALL_int64(REGISTER_ONE_HOT_SYCL);
+
+#undef REGISTER_ONE_HOT_SYCL_INDEX
+#undef REGISTER_ONE_HOT_SYCL
+
+#endif  // TENSORFLOW_USE_SYCL
+
 }  // namespace tensorflow

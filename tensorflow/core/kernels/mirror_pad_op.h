@@ -146,6 +146,19 @@ struct TensorEvaluator<const TensorMirrorPadOp<PaddingDimensions, ArgType>,
     }
   }
 
+#ifdef TENSORFLOW_USE_SYCL
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  TensorEvaluator(const TensorEvaluator<ArgType, Device>& impl,
+    const PaddingDimensions& padding,
+    const Dimensions& dimensions,
+    const array<Index, Dims>& input_strides,
+    const array<Index, Dims>& output_strides,
+    const Index& left_offset, const Index& right_offset) :
+    impl_(impl), padding_(padding), dimensions_(dimensions),
+    input_strides_(input_strides), output_strides_(output_strides),
+    left_offset_(left_offset), right_offset_(right_offset) {}
+#endif  // TENSORFLOW_USE_SYCL
+
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const Dimensions& dimensions() const {
     return dimensions_;
   }
@@ -246,6 +259,22 @@ struct TensorEvaluator<const TensorMirrorPadOp<PaddingDimensions, ArgType>,
 
   EIGEN_DEVICE_FUNC Scalar* data() const { return nullptr; }
 
+#ifdef TENSORFLOW_USE_SYCL
+  // Required by sycl in order to extract the accessor
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const TensorEvaluator<ArgType, Device>& impl() const { return impl_; }
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const PaddingDimensions& padding() const { return padding_; }
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const array<Index, Dims>& inputStrides() const { return input_strides_; }
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const array<Index, Dims>& outputStrides() const { return output_strides_; }
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const Index& leftOffset() const { return left_offset_; }
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  const Index& rightOffset() const { return right_offset_; }
+#endif  // TENSORFLOW_USE_SYCL
+
  protected:
   using Coords = array<Index, Dims>;
 
@@ -328,6 +357,64 @@ struct TensorEvaluator<const TensorMirrorPadOp<PaddingDimensions, ArgType>,
   Index left_offset_;
   Index right_offset_;
 };
+
+#ifdef TENSORFLOW_USE_SYCL
+
+namespace TensorSycl {
+namespace internal {
+
+#define MIRROR_PAD_OP_FUNC_EXT(OPEXPR, CVQual)                            \
+template <typename PaddingDimensions, typename XprType, typename Dev>     \
+struct FunctorExtractor<Eigen::TensorEvaluator<                           \
+         CVQual Eigen::OPEXPR<PaddingDimensions, XprType>, Dev> > {       \
+  typedef Eigen::TensorEvaluator<CVQual Eigen::OPEXPR<PaddingDimensions,  \
+                                 XprType>, Dev> Evaluator;                \
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE                                   \
+  static auto instantiate(const Evaluator& expr)                          \
+  RETURN_CPP11(utility::tuple::make_tuple(                                \
+    FunctorExtractor<Eigen::TensorEvaluator<XprType, Dev> >::             \
+        instantiate(expr.impl()),                                         \
+    expr.padding(),                                                       \
+    expr.dimensions(),                                                    \
+    expr.inputStrides(),                                                  \
+    expr.outputStrides(),                                                 \
+    expr.leftOffset(),                                                    \
+    expr.rightOffset())                                                   \
+  )                                                                       \
+};                                                                        \
+template <typename PaddingDimensions, typename OrigXprType,               \
+          typename XprType, typename TupleType>                           \
+struct ExprConstructor<CVQual OPEXPR <PaddingDimensions, OrigXprType>,    \
+                       CVQual OPEXPR <PaddingDimensions, XprType>,        \
+                       TupleType> {                                       \
+  typedef ExprConstructor<OrigXprType, XprType, TupleType> my_xpr_type;   \
+  typedef CVQual OPEXPR <PaddingDimensions, typename my_xpr_type::Type>   \
+    Type;                                                                 \
+  typedef TensorEvaluator<Type, Device> Evaluator;                        \
+  template <typename FuncDetector>                                        \
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE                            \
+  Evaluator instantiate (const FuncDetector &funcD, const TupleType &t) { \
+    return Evaluator(                                                     \
+      my_xpr_type::instantiate(utility::tuple::get<0>(funcD), t),         \
+      utility::tuple::get<1>(funcD),                                      \
+      utility::tuple::get<2>(funcD),                                      \
+      utility::tuple::get<3>(funcD),                                      \
+      utility::tuple::get<4>(funcD),                                      \
+      utility::tuple::get<5>(funcD),                                      \
+      utility::tuple::get<6>(funcD));                                     \
+  }\
+};
+
+MIRROR_PAD_OP_FUNC_EXT(TensorMirrorPadOp, const)
+MIRROR_PAD_OP_FUNC_EXT(TensorMirrorPadOp, )
+
+#undef MIRROR_PAD_OP_FUNC_EXT
+
+}  // namespace internal
+}  // namespace TensorSycl
+
+#endif  // TENSORFLOW_USE_SYCL
+
 }  // namespace Eigen
 
 namespace tensorflow {
@@ -372,10 +459,10 @@ struct MirrorPadGrad {
     // Copy the gradient input into the scratch buffer.
     scratch.device(device) = input;
 
-    Eigen::array<int32, Dims> lhs_offsets;
-    Eigen::array<int32, Dims> rhs_offsets;
-    Eigen::array<int32, Dims> extents;
-    Eigen::array<bool, Dims> reverses;
+    Eigen::DSizes<int32, Dims> lhs_offsets;
+    Eigen::DSizes<int32, Dims> rhs_offsets;
+    Eigen::DSizes<int32, Dims> extents;
+    Eigen::DSizes<bool, Dims> reverses;
 
     for (int i = 0; i < Dims; ++i) {
       lhs_offsets[i] = 0;

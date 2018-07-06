@@ -20,6 +20,8 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
+#include "tensorflow/core/lib/bfloat16/bfloat16.h"
+
 #ifdef TENSORFLOW_USE_SYCL
 #include "tensorflow/core/kernels/cwise_ops_sycl_common.h"
 #endif
@@ -534,19 +536,6 @@ struct ApproximateEqual<CPUDevice, T> {
     z.device(d) = diff.abs() <= tolerance;
   }
 };
-
-#ifdef TENSORFLOW_USE_SYCL
-// Partial specialization of ApproximateEqual<Device=SYCLDevice, T>.
-template <typename T>
-struct ApproximateEqual<SYCLDevice, T> {
-  void operator()(const SYCLDevice& d, typename TTypes<T>::ConstFlat x,
-                  typename TTypes<T>::ConstFlat y, T tolerance,
-                  typename TTypes<bool>::Flat z) {
-    auto diff = x - y;
-    z.device(d) = diff.abs() <= tolerance;
-  }
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // end namespace functor
 

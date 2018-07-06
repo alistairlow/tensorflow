@@ -25,6 +25,10 @@ limitations under the License.
 
 namespace tensorflow {
 
+#ifdef TENSORFLOW_USE_SYCL
+typedef Eigen::SyclDevice SYCLDevice;
+#endif  // TENSORFLOW_USE_SYCL
+
 namespace generator {
 
 template <typename T, typename TI>
@@ -49,6 +53,16 @@ class OneGenerator {
   const typename TTypes<T>::ConstScalar off_value_;
 };
 
+#ifdef TENSORFLOW_USE_SYCL
+template <typename TI>
+struct OneGeneratorSYCL {
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE TI
+  operator()(const Eigen::array<Eigen::DenseIndex, 3>& pre_depth_suff) const {
+    return pre_depth_suff[1];
+  }
+};
+#endif  // TENSORFLOW_USE_SYCL
+
 }  // namespace generator
 
 namespace functor {
@@ -64,6 +78,47 @@ struct OneHot {
     output->device(d) = output->generate(generator);
   }
 };
+
+#ifdef TENSORFLOW_USE_SYCL
+template <typename T, typename TI>
+struct OneHot<SYCLDevice, T, TI> {
+  EIGEN_ALWAYS_INLINE static void Compute(
+      const SYCLDevice& d, const typename TTypes<TI>::ConstMatrix& indices,
+      const typename TTypes<T>::ConstScalar& on_value,
+      const typename TTypes<T>::ConstScalar& off_value,
+      typename TTypes<T, 3>::Tensor* output) {
+    auto output_dims = output->dimensions();
+#if !defined(EIGEN_HAS_INDEX_LIST)
+    Eigen::Tensor<Eigen::DenseIndex, 3>::Dimensions reshape_3d{{1, 1, 1}};
+    Eigen::Tensor<Eigen::DenseIndex, 3>::Dimensions
+      reshape_indices{{output_dims[0], 1, output_dims[2]}};
+    Eigen::array<Eigen::DenseIndex, 3>
+      broadcast_indices{{1, output_dims[1], 1}};
+#else
+    Eigen::IndexList<Eigen::type2index<1>,
+                     Eigen::type2index<1>,
+                     Eigen::type2index<1> > reshape_3d;
+    Eigen::IndexList<Eigen::DenseIndex,
+                     Eigen::type2index<1>,
+                     Eigen::DenseIndex> reshape_indices;
+    reshape_indices.set(0, output_dims[0]);
+    reshape_indices.set(2, output_dims[2]);
+    Eigen::IndexList<Eigen::type2index<1>,
+                     Eigen::DenseIndex,
+                     Eigen::type2index<1> > broadcast_indices;
+    broadcast_indices.set(1, output_dims[1]);
+#endif
+    auto indices_3d = indices.reshape(reshape_indices)
+                             .broadcast(broadcast_indices);
+    auto on_value_3d = on_value.reshape(reshape_3d).broadcast(output_dims);
+    auto off_value_3d = off_value.reshape(reshape_3d).broadcast(output_dims);
+
+    generator::OneGeneratorSYCL<TI> generator;
+    output->device(d) = (indices_3d == indices_3d.generate(generator))
+                          .select(on_value_3d, off_value_3d);
+  }
+};
+#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace functor
 

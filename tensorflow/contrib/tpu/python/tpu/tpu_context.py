@@ -24,6 +24,7 @@ import copy
 import numpy as np
 
 from tensorflow.contrib.tpu.python.tpu import device_assignment  as tpu_device_assignment
+from tensorflow.contrib.tpu.python.tpu import tpu_config
 from tensorflow.contrib.tpu.python.tpu import tpu_system_metadata as tpu_system_metadata_lib
 from tensorflow.python.estimator import model_fn as model_fn_lib
 from tensorflow.python.platform import tf_logging as logging
@@ -39,7 +40,7 @@ class _TPUContext(object):
 
   This immutable object holds TPUEstimator config, train/eval batch size, and
   `TPUEstimator.use_tpu`, which is expected to be passed around. It also
-  provides utility functions, basded on the current state, to determine other
+  provides utility functions, based on the current state, to determine other
   information commonly required by TPU computation, such as TPU device names,
   TPU hosts, shard batch size, etc.
 
@@ -106,7 +107,9 @@ class _TPUContext(object):
     # pylint: disable=protected-access
     tpu_system_metadata = (
         tpu_system_metadata_lib._query_tpu_system_metadata(
-            master, query_topology=self.model_parallelism_enabled))
+            master,
+            run_config=self._config,
+            query_topology=self.model_parallelism_enabled))
 
     self._lazy_tpu_system_metadata_dict[master] = tpu_system_metadata
     return tpu_system_metadata
@@ -203,7 +206,13 @@ class _TPUContext(object):
     """Return true if input_fn is invoked per-core (other than per-host)."""
     mode = self._assert_mode()
     return (mode == model_fn_lib.ModeKeys.TRAIN and
-            not self._config.tpu_config.per_host_input_for_training)
+            (self._config.tpu_config.per_host_input_for_training is
+             tpu_config.InputPipelineConfig.PER_SHARD_V1))
+
+  def is_input_per_host_with_iterators(self):
+    """Return true if input_fn should be run in the per-host v2 config."""
+    return (self._config.tpu_config.per_host_input_for_training is
+            tpu_config.InputPipelineConfig.PER_HOST_V2)
 
   def is_running_on_cpu(self, is_export_mode=False):
     """Determines whether the input_fn and model_fn should be invoked on CPU.
@@ -216,7 +225,7 @@ class _TPUContext(object):
         model, when mode == PREDICT. Only with this bool, we could
         tell whether user is calling the Estimator.predict or
         Estimator.export_savedmodel, which are running on TPU and CPU
-        respectively. Parent class Estimator does not distingush these two.
+        respectively. Parent class Estimator does not distinguish these two.
 
     Returns:
       bool, whether current input_fn or model_fn should be running on CPU.
@@ -269,7 +278,8 @@ class _TPUContext(object):
       return global_batch_size
 
     # On TPU
-    if self.is_input_sharded_per_core():
+    if self.is_input_sharded_per_core() or (
+        self.is_input_per_host_with_iterators()):
       # We prohibit per core input sharding for the model parallelism case,
       # therefore it is safe to use num_cores here.
       return global_batch_size // self.num_cores
@@ -408,6 +418,22 @@ class _TPUContext(object):
           'Cannot find any TPU cores in the system. Please double check '
           'Tensorflow master address and TPU worker(s). Available devices '
           'are {}.'.format(tpu_system_metadata.devices))
+
+    if self._config.tpu_config.num_shards:
+      user_provided_num_replicas = self._config.tpu_config.num_shards
+      if user_provided_num_replicas != num_replicas:
+        message = (
+            'TPUConfig.num_shards is not set correctly. According to TPU '
+            'system metadata for Tensorflow master ({}): num_replicas should '
+            'be ({}), got ({}). For non-model-parallelism, num_replicas should '
+            'be the total num of TPU cores in the system. For '
+            'model-parallelism, the total number of TPU cores should be '
+            'product(computation_shape) * num_replicas. Please set it '
+            'accordingly or leave it as `None`'.format(
+                self._get_master_address(), num_replicas,
+                user_provided_num_replicas))
+
+        raise ValueError(message)
 
     if mode == model_fn_lib.ModeKeys.TRAIN:
       if self._train_batch_size % num_replicas != 0:

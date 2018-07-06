@@ -40,4 +40,14 @@ REGISTER_KERNEL_BUILDER(Name("TruncateMod")
                             .TypeConstraint<int32>("T"),
                         BinaryOp<CPUDevice, functor::safe_mod<int32>>);
 #endif
+
+#ifdef TENSORFLOW_USE_SYCL
+REGISTER2(BinaryOp, SYCL, "Mod", functor::mod, int32, int64);
+REGISTER2(BinaryOp, SYCL, "TruncateMod", functor::mod, int32, int64);
+#define REGISTER_SYCL(type) \
+  REGISTER(BinaryOp, SYCL, "Mod", functor::fmod, type) \
+  REGISTER(BinaryOp, SYCL, "TruncateMod", functor::fmod, type)
+TF_CALL_SYCL_NUMBER_TYPES(REGISTER_SYCL);
+#undef REGISTER_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 }  // namespace tensorflow
